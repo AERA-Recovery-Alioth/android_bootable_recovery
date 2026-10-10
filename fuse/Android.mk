@@ -17,7 +17,6 @@ LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := \
-	android/statvfs.c \
 	buffer.c \
 	cuse_lowlevel.c \
 	fuse.c \
@@ -33,14 +32,15 @@ LOCAL_SRC_FILES := \
 	mount_util.c \
 	ulockmgr.c
 
-LOCAL_C_INCLUDES := \
-	$(LOCAL_PATH)/android \
-	$(LOCAL_PATH)/include
+# Modern bionic provides statvfs. The old shim discards mount flags and its
+# private header must not shadow bionic's C/C++ declarations in recovery.
+LOCAL_C_INCLUDES := $(LOCAL_PATH)/include
 
 LOCAL_SHARED_LIBRARIES := \
 	libutils
 
 LOCAL_CFLAGS := \
+	-iquote $(LOCAL_PATH)/android \
 	-D_FILE_OFFSET_BITS=64 \
 	-DFUSE_USE_VERSION=26 \
 	-fno-strict-aliasing

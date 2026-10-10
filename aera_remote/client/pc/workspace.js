@@ -7,11 +7,57 @@ const icon = name => {
   const use = document.createElementNS(svg.namespaceURI,'use');
   svg.setAttribute('class','icon'); use.setAttribute('href','#'+name); svg.append(use); return svg;
 };
+const payloadActivity = {id:'', signature:'', rows:new Map()};
+const payloadPanel = document.createElement('div');
+payloadPanel.id='payloadProgress';payloadPanel.className='payload-progress';payloadPanel.hidden=true;
+const payloadHeading=document.createElement('h3');payloadHeading.textContent='Partitions';
+const payloadSummary=document.createElement('div');payloadSummary.id='payloadProgressSummary';payloadSummary.className='small muted';
+const payloadList=document.createElement('div');payloadList.className='payload-progress-list';
+payloadPanel.append(payloadHeading,payloadSummary,payloadList);$('installerPrompt').before(payloadPanel);
+function renderPayloadProgress(job){
+  const progress=job.payload_progress,partitions=progress?.partitions||[];
+  payloadPanel.hidden=!progress?.available||!partitions.length;
+  if(payloadPanel.hidden){payloadActivity.id='';payloadActivity.signature='';payloadActivity.rows.clear();payloadList.replaceChildren();return}
+  const signature=JSON.stringify(partitions.map(partition=>partition.name));
+  if(payloadActivity.id!==job.id||payloadActivity.signature!==signature){
+    payloadActivity.id=job.id;payloadActivity.signature=signature;payloadActivity.rows.clear();payloadList.replaceChildren();
+    for(const partition of partitions){
+      const row=document.createElement('div');row.className='payload-progress-row';
+      const heading=document.createElement('div');heading.className='payload-progress-heading';
+      const name=document.createElement('strong');name.textContent=partition.name;
+      const status=document.createElement('span');status.className='payload-progress-state';
+      heading.append(name,status);
+      const bar=document.createElement('progress');bar.max=100;bar.value=0;bar.setAttribute('aria-label',partition.name+' progress');
+      const amount=document.createElement('div');amount.className='payload-progress-amount';
+      row.append(heading,bar,amount);payloadList.append(row);
+      payloadActivity.rows.set(partition.name,{row,status,bar,amount});
+    }
+  }
+  const labels={queued:'Queued',preparing:'Preparing',writing:'Writing',written:'Awaiting readback',verifying:'Verifying',verified:'Verified',failed:'Failed',not_flashed:'Not flashed'};
+  let active=0,queued=0,verified=0,failed=0,notFlashed=0;
+  for(const partition of partitions){
+    const {row,status,bar,amount}=payloadActivity.rows.get(partition.name);
+    const phase=Object.hasOwn(labels,partition.phase)?partition.phase:'queued';
+    const percent=Math.max(0,Math.min(100,Number(partition.percent)||0));
+    row.dataset.phase=phase;bar.value=percent;
+    status.textContent=labels[phase]+(['writing','verifying'].includes(phase)?' / '+percent+'%':'');
+    const megabytes=bytes=>(Number(bytes||0)/1000000).toFixed(1)+' MB';
+    amount.textContent=partition.bytes?
+      (['writing','verifying','failed'].includes(phase)?megabytes(partition.done)+' / ':'')+megabytes(partition.bytes):'';
+    if(['writing','verifying'].includes(phase))active++;
+    else if(['queued','preparing','written'].includes(phase))queued++;
+    else if(phase==='verified')verified++;
+    else if(phase==='failed')failed++;
+    else if(phase==='not_flashed')notFlashed++;
+  }
+  payloadSummary.textContent=verified+' / '+partitions.length+' verified / '+active+' active / '+queued+' queued'+
+    (failed?' / '+failed+' failed':'')+(notFlashed?' / '+notFlashed+' not flashed':'');
+}
 function showTab(tab) {
   if (workspace.tab !== tab && ['completed','failed','cancelled'].includes(state.job?.phase)) clearActivity();
   workspace.tab = tab;
   $('workspace').firstElementChild.hidden = tab !== 'install';
-  for (const name of ['root','files','device']) $(name+'Panel').hidden = tab !== name;
+  for (const name of ['root','files','device','backups']) $(name+'Panel').hidden = tab !== name;
   for (const button of $('workspaceTabs').children) {
     const selected = button.dataset.tab === tab;
     button.classList.toggle('selected',selected); button.setAttribute('aria-pressed',String(selected));
@@ -31,6 +77,7 @@ function clearActivity() {
   workspace.localJob=null;
   $('rootInspection').hidden=true;
   originalUpdateJob({phase:'idle'});$('log').textContent='No active operation.';
+  renderPayloadProgress({});
   $('installerDetails')?.setAttribute('hidden','');notice('');activityVisibility();
 }
 const originalConnected = connected;
@@ -163,6 +210,7 @@ updateJob = function(job) {
     notice(job.detail,job.phase==='completed'?'success':'');
   }
   renderInstallerDetails(job.presentation);
+  renderPayloadProgress(job);
   if(['fast','selected','direct','extract'].includes(job.install_method)) {
     const extract=job.install_method==='extract';
     $('progressLabel').textContent=extract?'Extraction':'Payload flash';

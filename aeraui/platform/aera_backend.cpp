@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 AERA Recovery Project contributors
  * SPDX-License-Identifier: Apache-2.0 */
 #include <aeraui/backend.hpp>
+#include "../../aera_remote/backup_cancel.hpp"
 #include "aeraui/features/update/payload_inspector.hpp"
 #include "aeraui/features/update/payload_arb.hpp"
 #include "aeraui/features/update/payload_targets.hpp"
@@ -33,6 +34,7 @@
 #include <sys/ioctl.h>
 #include <linux/fs.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 #include <cutils/properties.h>
@@ -47,6 +49,8 @@
 #include <set_metadata.h>
 #include "aeraui/platform/aera_ui_host.hpp"
 #include "aera_remote/pc_connection.hpp"
+#include "aera_remote/pc_storage.hpp"
+#include "aeraui/features/backup/app_vault.hpp"
 #include "aeraui/platform/image_targets.hpp"
 #include <twinstall.h>
 #include <twinstall/adb_install.h>
@@ -206,6 +210,7 @@ bool PathInside(const std::string &path, const std::string &parent) {
 }
 
 bool MeasureBackupTree(const std::string &path, uint64_t *bytes) {
+  if (aera::pc::BackupCancelRequested()) return false;
   struct stat info {};
   if (lstat(path.c_str(), &info) != 0 || S_ISLNK(info.st_mode)) return false;
   if (S_ISREG(info.st_mode)) {
@@ -227,18 +232,19 @@ bool MeasureBackupTree(const std::string &path, uint64_t *bytes) {
   return ok;
 }
 
-void SetBackupUploadProgress(uint64_t copied, uint64_t total) {
+void SetBackupUploadProgress(uint64_t copied, uint64_t total, const char *label = "NAS upload") {
   const int percent = total == 0 ? 100 : static_cast<int>(
       std::min<uint64_t>(copied, total) * 100ULL / total);
   std::ostringstream detail;
-  detail << "NAS upload: " << copied / (1024ULL * 1024ULL) << " MB of "
+  detail << label << ": " << copied / (1024ULL * 1024ULL) << " MB of "
          << total / (1024ULL * 1024ULL) << " MB (" << percent << "%)";
   DataManager::SetValue("tw_size_progress", detail.str());
   DataManager::SetProgress(static_cast<float>(percent) / 100.0f);
 }
 
 bool CopyBackupTree(const std::string &source, const std::string &destination,
-                    uint64_t total, uint64_t *copied) {
+                    uint64_t total, uint64_t *copied, const char *label = "NAS upload") {
+  if (aera::pc::BackupCancelRequested()) return false;
   struct stat info {};
   if (lstat(source.c_str(), &info) != 0 || S_ISLNK(info.st_mode)) return false;
   if (S_ISDIR(info.st_mode)) {
@@ -254,7 +260,7 @@ bool CopyBackupTree(const std::string &source, const std::string &destination,
         continue;
       ok = CopyBackupTree(source + "/" + entry->d_name,
                           destination + "/" + entry->d_name,
-                          total, copied);
+                          total, copied, label);
     }
     closedir(directory);
     return ok;
@@ -273,6 +279,7 @@ bool CopyBackupTree(const std::string &source, const std::string &destination,
   std::vector<char> buffer(1024 * 1024);
   bool ok = true;
   while (ok) {
+    if (aera::pc::BackupCancelRequested()) { ok = false; break; }
     const ssize_t read_bytes = read(input, buffer.data(), buffer.size());
     if (read_bytes == 0) break;
     if (read_bytes < 0) {
@@ -284,14 +291,14 @@ bool CopyBackupTree(const std::string &source, const std::string &destination,
     while (offset < read_bytes) {
       const ssize_t written = write(output, buffer.data() + offset,
                                     read_bytes - offset);
-      if (written < 0) {
+      if (written <= 0) {
         if (errno == EINTR) continue;
         ok = false;
         break;
       }
       offset += written;
       *copied += static_cast<uint64_t>(written);
-      SetBackupUploadProgress(*copied, total);
+      SetBackupUploadProgress(*copied, total, label);
     }
   }
   if (close(output) != 0) ok = false;
@@ -685,6 +692,181 @@ bool RecoveryUsesFileBasedEncryption() {
 int RecoveryPatternGridSize() {
   const int size = DataManager::GetIntValue("tw_gui_pattern_grid_size");
   return size >= 3 && size <= 6 ? size : 3;
+}
+
+void RecoveryEnsurePcStorage() {
+  PartitionManager.Add_PC_Storage();
+}
+
+int RecoveryRunPcBackup(const JobRequest &request) {
+  using namespace aera::pc;
+  const bool computer = request.backup_source == "computer";
+  const bool apps = request.backup_kind == "apps";
+  const bool backup = request.backup_action == "backup";
+  const bool restore = request.backup_action == "restore";
+  const std::string old_storage = RecoveryStorage();
+  const std::string old_folder = DataManager::GetStrValue(TW_BACKUPS_FOLDER_VAR);
+  bool mounted = false;
+  bool virtual_storage = false;
+  std::string staged;
+  struct Cleanup {
+    bool &mounted, &virtual_storage; const std::string &old_storage, &old_folder; std::string &staged;
+    ~Cleanup() {
+      DataManager::SetValue("tw_storage_path", old_storage);
+      DataManager::SetValue(TW_BACKUPS_FOLDER_VAR, old_folder);
+      if (mounted) storage::Unmount();
+      storage::Channel().Stop();
+      if (virtual_storage) {
+        auto *part = PartitionManager.Find_Partition_By_Path(storage::kMount);
+        PartitionManager.Remove_Partition_By_Path(storage::kMount);
+        delete part;
+      }
+      if (!staged.empty()) TWFunc::removeDir(staged, false);
+    }
+  } cleanup{mounted, virtual_storage, old_storage, old_folder, staged};
+  Json::Value result(Json::objectValue);
+  auto fail = [&](const std::string &error) {
+    std::string message = error;
+    if (computer) {
+      const auto detail = storage::Channel().LastError();
+      if (!detail.empty()) message += "\nComputer storage: " + detail;
+    }
+    result["error"] = message; UpdateBackupResult(result);
+    DataManager::SetValue("tw_file_progress", message); gui_print("%s\n", message.c_str()); return 1;
+  };
+  auto progress = [](unsigned value, const std::string &detail) {
+    DataManager::SetProgress(value / 100.0f); DataManager::SetValue("tw_file_progress", detail);
+  };
+  if (request.backup_kind != "recovery" && !apps) return fail("Unknown backup type.");
+  if (request.backup_action != "apps" && request.backup_action != "inspect" &&
+      request.backup_action != "snapshots" && !backup && !restore) return fail("Unknown backup operation.");
+  if (computer && request.backup_action != "apps") {
+    if (PartitionManager.Find_Partition_By_Path(storage::kMount)) return fail("Computer storage is already in use.");
+    RecoveryEnsurePcStorage(); virtual_storage = true;
+    std::string error;
+    if (!storage::Mount(error)) return fail(error);
+    mounted = true;
+    auto *part = PartitionManager.Find_Partition_By_Path(storage::kMount);
+    if (!part) return fail("Computer storage was not initialized.");
+    part->Is_Present = true;
+  }
+  JobRequest native = request;
+  if (restore && computer && request.backup_method == "transfer") {
+    const auto destinations = RecoveryVolumes("storage");
+    if (request.backup_storage == storage::kMount || std::none_of(destinations.begin(), destinations.end(),
+          [&](const Volume &volume) { return volume.path == request.backup_storage; }) ||
+        !PartitionManager.Mount_By_Path(request.backup_storage, true)) return fail("Choose mounted device storage for the transfer.");
+    if (!apps) {
+      auto *destination = PartitionManager.Find_Partition_By_Path(request.backup_storage);
+      for (const auto &path : request.partitions) {
+        auto *target = PartitionManager.Find_Partition_By_Path(path);
+        if (!target) return fail("Select available restore partitions.");
+        bool preserve_media = target->Get_Mount_Point() == "/data" &&
+            DataManager::GetIntValue(TW_HAS_DATA_MEDIA) != 0;
+#ifdef TW_OEM_BUILD
+        preserve_media = false;
+#endif
+        if ((target == destination && !preserve_media) ||
+            (path == "/storage" && destination && destination->Get_Mount_Point() == "/data"))
+          return fail("The selected restore would erase its transfer folder. Use another storage device or direct streaming.");
+      }
+    }
+    uint64_t bytes = 0, copied = 0; struct statvfs info{};
+    progress(0, "Measuring the computer backup");
+    if (!MeasureBackupTree(request.path, &bytes) || statvfs(request.backup_storage.c_str(), &info) ||
+        static_cast<uint64_t>(info.f_bavail) * info.f_frsize < bytes + 16 * 1024 * 1024)
+      return fail("Not enough device storage for a complete transfer. Direct streaming remains available.");
+    const std::string parent = request.backup_storage + "/AERA/PCTransfers";
+    if (!TWFunc::Recursive_Mkdir(parent)) return fail("Could not create the transfer directory.");
+    std::string pattern = parent + "/backup-XXXXXX";
+    std::vector<char> name(pattern.begin(), pattern.end()); name.push_back(0);
+    if (!mkdtemp(name.data())) return fail("Could not allocate the transfer directory.");
+    staged = name.data(); native.path = staged + "/backup";
+    if (native.path.size() > 220) return fail("Choose a shorter storage path for the transfer.");
+    if (!CopyBackupTree(request.path, native.path, bytes, &copied, "Backup transfer"))
+      return fail("The transfer did not complete. Nothing was restored.");
+    DataManager::SetValue("tw_storage_path", request.backup_storage);
+    storage::Unmount(); mounted = false;
+  }
+  if (apps) {
+    const auto app_progress = [](const AppVaultProgress &value) {
+      DataManager::SetProgress(value.percent / 100.0f);
+      DataManager::SetValue("tw_operation", value.stage);
+      DataManager::SetValue("tw_size_progress", value.amount.empty() ? "Working..." : value.amount);
+      std::string files;
+      if (value.files_total) files = std::to_string(value.files_done) + " / " + std::to_string(value.files_total);
+      if (!value.current_file.empty()) files += "\n" + value.current_file;
+      DataManager::SetValue("tw_file_progress", files);
+    };
+    if (!RunAppVaultRemote(native, result, app_progress)) {
+      UpdateBackupResult(result); return fail(result.get("error", "App operation failed.").asString());
+    }
+    if (backup && computer && storage::WriteError())
+      return fail("The computer did not confirm all backup writes. Do not use this backup until a complete retry succeeds.");
+    if (backup) result["folder"] = computer ? request.path.substr(strlen(storage::kMount)) : request.path;
+  } else if (request.backup_action == "inspect") {
+    result["partitions"] = Json::Value(Json::arrayValue);
+    for (const auto &volume : RecoveryRestoreVolumes(request.path)) {
+      Json::Value item; item["path"] = volume.path; item["name"] = volume.name;
+      item["bytes"] = Json::UInt64(volume.bytes); result["partitions"].append(item);
+    }
+    if (result["partitions"].empty()) return fail("This folder does not contain a complete compatible recovery backup.");
+  } else if (backup) {
+    native.job = Job::kBackup;
+    if (PartitionManager.Check_Backup_Name(native.name, true, false) != 0)
+      return fail("Use a valid backup name.");
+    if (!RecoverySetStorage(computer ? storage::kMount : request.backup_storage)) return fail("Backup storage is unavailable.");
+    native.path = computer ? storage::kMount : request.backup_storage;
+    native.digest = RecoveryPreference(Preference::kBackupChecksums);
+    const auto folder = DataManager::GetStrValue(TW_BACKUPS_FOLDER_VAR) + "/" + native.name;
+    struct stat exists{};
+    if (native.name.empty() || !lstat(folder.c_str(), &exists)) return fail("Use a new backup name.");
+    if (computer || aera::pc::BackupOperationActive()) {
+      if (!TWFunc::Create_Dir_Recursive(folder, 0777, 0, 0)) return fail("Could not create the computer backup folder.");
+      const int marker = open((folder + "/.aera-incomplete").c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+      if (marker < 0 || close(marker)) return fail("Could not mark the backup as incomplete.");
+      // The incomplete marker stays until every backup file and digest is closed.
+      DataManager::SetValue(TW_BACKUP_NAME, native.name);
+      std::string selections;
+      const auto available = RecoveryVolumes("backup");
+      for (const auto &path : native.partitions) {
+        if (path.find(';') != std::string::npos || std::none_of(available.begin(), available.end(),
+              [&](const Volume &volume) { return volume.path == path; })) return fail("Select available backup partitions.");
+        selections += path + ";";
+      }
+      DataManager::SetValue("tw_backup_list", selections);
+      DataManager::SetValue(TW_USE_COMPRESSION_VAR, native.compression ? 1 : 0);
+      DataManager::SetValue(TW_SKIP_DIGEST_GENERATE_VAR, native.digest ? 0 : 1);
+      DataManager::SetValue("tw_encrypt_backup", 0);
+      TWFunc::SetPerformanceMode(true);
+      const int complete = PartitionManager.Run_Backup(false);
+      TWFunc::SetPerformanceMode(false);
+      if (complete != 1 || (computer && storage::WriteError()) || BackupCancelRequested()) return fail("Backup did not complete. Do not use the unfinished backup.");
+      if (unlink((folder + "/.aera-incomplete").c_str())) return fail("Backup data was written, but completion could not be confirmed.");
+    } else if (RecoveryRunJob(native)) return fail("Backup failed. Review the recovery log.");
+    result["folder"] = computer ? folder.substr(strlen(storage::kMount)) : folder;
+  } else if (restore) {
+    native.job = Job::kRestore;
+    native.digest = RecoveryPreference(Preference::kVerifyBackupChecksums);
+    if (computer && request.backup_method != "transfer") DataManager::SetValue("tw_storage_path", storage::kMount);
+    const auto available = RecoveryRestoreVolumes(native.path);
+    std::string selections;
+    for (const auto &path : native.partitions) {
+      if (std::none_of(available.begin(), available.end(), [&](const Volume &volume) { return volume.path == path; }))
+        return fail("Select partitions present in this backup.");
+      selections += path + ";";
+    }
+    // The legacy variable name is inverted: Run_Restore verifies only when it is 1.
+    DataManager::SetValue("tw_restore", native.path);
+    DataManager::SetValue("tw_restore_selected", selections);
+    DataManager::SetValue(TW_SKIP_DIGEST_CHECK_VAR, native.digest ? 1 : 0);
+    TWFunc::SetPerformanceMode(true);
+    const int restored = PartitionManager.Run_Restore(native.path);
+    TWFunc::SetPerformanceMode(false);
+    if (restored != 1 || BackupCancelRequested()) return fail("Restore failed. Some data may already have been written; remain in recovery and retry.");
+  } else return fail("Unknown recovery backup operation.");
+  result["detail"] = backup ? "Backup completed." : restore ? "Restore completed." : "Backup information loaded.";
+  UpdateBackupResult(result); progress(100, result["detail"].asString()); return 0;
 }
 
 bool RecoverySetStorage(const std::string &path) {
@@ -1111,6 +1293,7 @@ int RecoveryRunJob(const JobRequest &request) {
     return 0;
   }
   if (request.job == Job::kInstall) return aeraui_install_package(request.path.c_str());
+  if (request.job == Job::kPcBackupOperation) return RecoveryRunPcBackup(request);
   if (request.job == Job::kRootOperation) {
     root::Request operation;
     if (request.root_slot != "a" && request.root_slot != "b") return 1;
@@ -1372,7 +1555,8 @@ int RecoveryRunJob(const JobRequest &request) {
       DataManager::SetValue(TW_BACKUP_NAME, backup_name);
       DataManager::SetValue("tw_backup_list", selections);
       DataManager::SetValue(TW_USE_COMPRESSION_VAR, request.compression ? 1 : 0);
-      DataManager::SetValue(TW_SKIP_DIGEST_GENERATE_VAR, request.digest ? 0 : 1);
+      DataManager::SetValue(TW_SKIP_DIGEST_GENERATE_VAR,
+                            request.digest && RecoveryPreference(Preference::kBackupChecksums) ? 0 : 1);
       DataManager::SetValue("tw_encrypt_backup", 0);
       if (PartitionManager.Check_Backup_Name(backup_name, true, true) == 0)
         result = PartitionManager.Run_Backup(false) ? 0 : 1;
@@ -1380,7 +1564,8 @@ int RecoveryRunJob(const JobRequest &request) {
   } else if (request.job == Job::kRestore) {
     DataManager::SetValue("tw_restore", request.path);
     DataManager::SetValue("tw_restore_selected", selections);
-    DataManager::SetValue(TW_SKIP_DIGEST_CHECK_VAR, request.digest ? 0 : 1);
+    DataManager::SetValue(TW_SKIP_DIGEST_CHECK_VAR,
+                          request.digest && RecoveryPreference(Preference::kVerifyBackupChecksums) ? 1 : 0);
     result = PartitionManager.Run_Restore(request.path) ? 0 : 1;
   } else if (request.job == Job::kWipe) {
     result = 0;
@@ -1562,12 +1747,18 @@ static const char *PreferenceVariable(Preference preference) {
     case Preference::kRecents: return "aera_recents_enabled";
     case Preference::kPreserveRecovery: return AERA_PRESERVE_RECOVERY_VAR;
     case Preference::kPreserveAbl: return AERA_PRESERVE_ABL_VAR;
+    case Preference::kBackupChecksums: return TW_SKIP_DIGEST_GENERATE_VAR;
+    case Preference::kVerifyBackupChecksums: return "aera_verify_backup_checksums";
   }
   return nullptr;
 }
 bool RecoveryPreference(Preference preference) {
   LoadAeraPreferencesIfAvailable();
   const char *variable = PreferenceVariable(preference);
+  if (preference == Preference::kBackupChecksums)
+    return DataManager::GetIntValue(TW_SKIP_DIGEST_GENERATE_VAR) == 0;
+  if (preference == Preference::kVerifyBackupChecksums)
+    return DataManager::GetStrValue(variable) != "0";
   return variable && DataManager::GetIntValue(variable) != 0;
 }
 bool RecoveryPreservationSupported() {
@@ -1581,7 +1772,12 @@ bool RecoverySetPreference(Preference preference, bool enabled) {
   const char *variable = PreferenceVariable(preference);
   if (!variable || (preference == Preference::kSha256 && !RecoverySha256Available()) ||
       (preference == Preference::kPreserveAbl && !RecoveryAblPreservationSupported())) return false;
-  return DataManager::SetValue(variable, enabled ? 1 : 0) == 0;
+  if (DataManager::SetValue(variable,
+      preference == Preference::kBackupChecksums ? (enabled ? 0 : 1) : (enabled ? 1 : 0)) != 0)
+    return false;
+  if (preference == Preference::kVerifyBackupChecksums)
+    return DataManager::SetValue(TW_SKIP_DIGEST_CHECK_VAR, enabled ? 1 : 0) == 0;
+  return true;
 }
 int RecoveryUtcOffset() {
   LoadAeraPreferencesIfAvailable();
@@ -1934,6 +2130,8 @@ struct EarlyUiPreferences {
   int haptic_action;
   int preserve_recovery;
   int preserve_abl;
+  int backup_checksums;
+  int verify_backup_checksums;
 };
 
 bool gEarlyPreferencesAttempted = false;
@@ -2007,6 +2205,8 @@ EarlyUiPreferences DefaultEarlyUiPreferences() {
   preferences.preserve_recovery =
       DataManager::GetIntValue(AERA_RECOVERY_PRESERVATION_SUPPORTED) != 0 ? 1 : 0;
   preferences.preserve_abl = 0;
+  preferences.backup_checksums = 1;
+  preferences.verify_backup_checksums = 1;
   return preferences;
 }
 
@@ -2062,6 +2262,8 @@ EarlyUiPreferences CaptureCurrentEarlyUiPreferences() {
       DataManager::GetIntValue(AERA_PRESERVE_RECOVERY_VAR) != 0 ? 1 : 0;
   preferences.preserve_abl =
       DataManager::GetIntValue(AERA_PRESERVE_ABL_VAR) != 0 ? 1 : 0;
+  preferences.backup_checksums = DataManager::GetIntValue(TW_SKIP_DIGEST_GENERATE_VAR) == 0 ? 1 : 0;
+  preferences.verify_backup_checksums = DataManager::GetStrValue("aera_verify_backup_checksums") != "0" ? 1 : 0;
   return preferences;
 }
 
@@ -2111,6 +2313,8 @@ bool ResetAeraSettings(bool theme) {
     set("tw_hidden_files", 0);
     set(TW_SIGNED_ZIP_VERIFY_VAR, 0);
     set(TW_USE_COMPRESSION_VAR, 0);
+    set(TW_SKIP_DIGEST_GENERATE_VAR, 0);
+    set("aera_verify_backup_checksums", 1);
     if (RecoverySha256Available()) set(TW_USE_SHA2, 1);
     if (RecoveryPreservationSupported())
       set(AERA_PRESERVE_RECOVERY_VAR, defaults.preserve_recovery);
@@ -2198,6 +2402,12 @@ bool SetEarlyUiValue(EarlyUiPreferences* preferences, const std::string& key,
   } else if (key == "preserve_abl") {
     if (!ParseInteger(value, 0, 1, &parsed)) return false;
     preferences->preserve_abl = parsed;
+  } else if (key == "backup_checksums") {
+    if (!ParseInteger(value, 0, 1, &parsed)) return false;
+    preferences->backup_checksums = parsed;
+  } else if (key == "verify_backup_checksums") {
+    if (!ParseInteger(value, 0, 1, &parsed)) return false;
+    preferences->verify_backup_checksums = parsed;
   } else {
     if (recognized != nullptr) *recognized = false;
     return false;
@@ -2234,6 +2444,9 @@ void ApplyEarlyUiPreferences(const EarlyUiPreferences& preferences) {
   DataManager::SetValue(AERA_PRESERVE_RECOVERY_VAR,
                         preferences.preserve_recovery);
   DataManager::SetValue(AERA_PRESERVE_ABL_VAR, preferences.preserve_abl);
+  DataManager::SetValue(TW_SKIP_DIGEST_GENERATE_VAR, preferences.backup_checksums ? 0 : 1);
+  DataManager::SetValue("aera_verify_backup_checksums", preferences.verify_backup_checksums);
+  DataManager::SetValue(TW_SKIP_DIGEST_CHECK_VAR, preferences.verify_backup_checksums);
 }
 
 void ApplyEarlyUiSideEffects() {
@@ -2303,7 +2516,9 @@ std::string SerializeEarlyUiPreferences(const EarlyUiPreferences& preferences) {
          << "haptic_keyboard=" << preferences.haptic_keyboard << '\n'
          << "haptic_action=" << preferences.haptic_action << '\n'
          << "preserve_recovery=" << preferences.preserve_recovery << '\n'
-         << "preserve_abl=" << preferences.preserve_abl << '\n';
+         << "preserve_abl=" << preferences.preserve_abl << '\n'
+         << "backup_checksums=" << preferences.backup_checksums << '\n'
+         << "verify_backup_checksums=" << preferences.verify_backup_checksums << '\n';
   return output.str();
 }
 
@@ -2436,6 +2651,8 @@ bool SaveAeraPreferences(bool require_early) {
          << "hidden=" << DataManager::GetIntValue("tw_hidden_files") << '\n'
          << "compression=" << DataManager::GetIntValue(TW_USE_COMPRESSION_VAR) << '\n'
          << "sha256=" << DataManager::GetIntValue(TW_USE_SHA2) << '\n'
+         << "backup_checksums=" << (DataManager::GetIntValue(TW_SKIP_DIGEST_GENERATE_VAR) == 0 ? 1 : 0) << '\n'
+         << "verify_backup_checksums=" << (DataManager::GetStrValue("aera_verify_backup_checksums") != "0" ? 1 : 0) << '\n'
          << "verify_zip=" << DataManager::GetIntValue(TW_SIGNED_ZIP_VERIFY_VAR) << '\n'
          << "preserve_recovery=" << DataManager::GetIntValue(AERA_PRESERVE_RECOVERY_VAR) << '\n'
          << "preserve_abl=" << DataManager::GetIntValue(AERA_PRESERVE_ABL_VAR) << '\n'

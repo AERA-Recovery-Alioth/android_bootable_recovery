@@ -488,7 +488,9 @@ public:
     if (operation_complete_.exchange(false, std::memory_order_acq_rel)) {
       if (operation_thread_.joinable())
         operation_thread_.join();
-      const bool success = operation_result_.load(std::memory_order_acquire) == 0;
+      const auto cancellation = aera::pc::GetBackupCancellation();
+      const bool pc_cancelled = operation_scene_.job == Job::kPcBackupOperation && cancellation.requested;
+      const bool success = operation_result_.load(std::memory_order_acquire) == 0 && !pc_cancelled;
       if (!pc_job_id_.empty()) {
         aera::pc::UpdateInstallerPresentation(RecoveryInstallerPresentation());
         aera::pc::UpdateInstall(RecoveryProgress(), RecoveryOperationDetail(), widgets::ReadLog());
@@ -505,7 +507,9 @@ public:
             RecoverySideloadStatus().cancel_requested;
         CompleteOperationScene(
             operation_scene_, success,
-            sideload_cancelled
+            pc_cancelled ? (cancellation.restore
+                ? "Stopping a restore may leave incomplete data. Complete a full restore before booting Android."
+                : "An unfinished backup cannot be restored.") : sideload_cancelled
                 ? "ADB sideload was cancelled. Normal ADB has been restored."
                 : success
                       ? "The requested operation completed. Review its output below."
@@ -2310,6 +2314,29 @@ private:
       return;
     }
 
+    if (action == Action::kCancelPcBackup && self->operation_running_ &&
+        self->operation_scene_.job == Job::kPcBackupOperation) {
+      const auto pending = aera::pc::GetBackupCancellation();
+      if (!pending.active || pending.requested || self->PcBlockedByModal()) return;
+      auto *screen = lv_screen_active();
+      if (pending.restore) {
+        widgets::Sheet(screen, "Cancel restore",
+            "Stopping a restore may leave incomplete data. Complete a full restore before booting Android.",
+            [screen, id = pending.id] {
+              const auto current = aera::pc::GetBackupCancellation();
+              if (!current.active || current.id != id || current.requested) return;
+              widgets::Sheet(screen, "Confirm restore cancellation",
+                  "Stopping a restore may leave incomplete data. Complete a full restore before booting Android.",
+                  [id] { aera::pc::CancelBackup(id, true); });
+            });
+      } else {
+        widgets::Sheet(screen, "Cancel backup",
+            "An unfinished backup cannot be restored.",
+            [id = pending.id] { aera::pc::CancelBackup(id, false); });
+      }
+      return;
+    }
+
     if (action == Action::kBack) {
       // UI back controls already provide their touch haptic. Hardware Back
       // and edge gestures call NavigateBack() directly with feedback enabled.
@@ -2829,7 +2856,7 @@ private:
     bool pc_busy = !interactive_ready_ || decryption_active_ || decrypt_running_ ||
         operation_running_ || wifi_running_ || nas_running_ || plugin_running_ ||
         update_running_ || fastboot_mode_ || power_overlay_ ||
-        current_scene_ == Action::kRootManager;
+        current_scene_ == Action::kRootManager || current_scene_ == Action::kAppVault;
 #ifndef TW_OEM_BUILD
     pc_busy = pc_busy || aera::rpc::Dispatcher::Active();
 #endif

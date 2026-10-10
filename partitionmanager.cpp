@@ -21,6 +21,7 @@
 
 #include <stdio.h>
 #include "aera_image_flash_batch.hpp"
+#include "aera_remote/backup_cancel.hpp"
 #include "aera_image_flash_mounts.hpp"
 #include <stdlib.h>
 #include <string.h>
@@ -918,6 +919,21 @@ bool TWPartitionManager::Is_NAS_Path(const std::string& Path) {
 	return Path == nas || Path.compare(0, nas.size() + 1, nas + "/") == 0;
 }
 
+void TWPartitionManager::Add_PC_Storage() {
+	if (Find_Partition_By_Path("/pc")) return;
+	auto *storage = new TWPartition();
+	storage->Mount_Point = storage->Storage_Path = "/pc";
+	storage->Display_Name = storage->Storage_Name = storage->Backup_Display_Name = "This computer";
+	storage->Backup_Path = "/pc";
+	storage->Current_File_System = storage->Fstab_File_System = "fuse.pc";
+	storage->Actual_Block_Device = storage->Primary_Block_Device = "/dev/fuse";
+	storage->Is_Storage = storage->Can_Be_Mounted = storage->Removable = true;
+	storage->Can_Be_Wiped = storage->Can_Be_Backed_Up = storage->Wipe_Available_in_GUI = false;
+	storage->Is_Settings_Storage = storage->Is_Present = false;
+	storage->Backup_Method = BM_NONE;
+	Add_Partition(storage);
+}
+
 void TWPartitionManager::Add_NAS_Storage() {
 #ifndef OF_ENABLE_WLAN
 	DataManager::SetValue(TW_HAS_NAS_STORAGE, 0);
@@ -980,7 +996,7 @@ int TWPartitionManager::Write_Fstab(void) {
 		return false;
 	}
 	for (iter = Partitions.begin(); iter != Partitions.end(); iter++) {
-		if ((*iter)->Can_Be_Mounted) {
+		if ((*iter)->Can_Be_Mounted && (*iter)->Current_File_System != "fuse.pc") {
 			Line = (*iter)->Actual_Block_Device + " " + (*iter)->Mount_Point + " " + (*iter)->Current_File_System +
 				((*iter)->Mount_Read_Only ? " ro " : " rw ") + "0 0\n";
 			fputs(Line.c_str(), fp);
@@ -1558,7 +1574,7 @@ void TWPartitionManager::Clean_Backup_Folder(string Backup_Folder) {
 }
 
 int TWPartitionManager::Check_Backup_Cancel() {
-	return stop_backup.get_value();
+	return stop_backup.get_value() || aera::pc::BackupCancelRequested();
 }
 
 int TWPartitionManager::Cancel_Backup() {
@@ -1687,7 +1703,10 @@ int TWPartitionManager::Run_Backup(bool adbbackup) {
 	storage = Find_Partition_By_Path(DataManager::GetCurrentStoragePath());
 	if (storage != NULL) {
 		free_space = storage->Free;
-		gui_msg(Msg("available_space= * Available space: {1}MB")(free_space / 1024 / 1024));
+		if (storage->Current_File_System == "fuse.pc")
+			gui_print(" * Computer storage: disk-full errors are reported by the browser.\n");
+		else
+			gui_msg(Msg("available_space= * Available space: {1}MB")(free_space / 1024 / 1024));
 	} else {
 		gui_err("unable_locate_storage=Unable to locate storage device.");
 		return false;
@@ -1695,7 +1714,7 @@ int TWPartitionManager::Run_Backup(bool adbbackup) {
 
 	DataManager::GetValue(TW_DISABLE_FREE_SPACE_VAR, disable_free_space_check);
 
-	if (adbbackup)
+	if (adbbackup || storage->Current_File_System == "fuse.pc")
 		disable_free_space_check = true;
 
 	if (!disable_free_space_check) {
@@ -1738,7 +1757,7 @@ int TWPartitionManager::Run_Backup(bool adbbackup) {
 	start_pos = 0;
 	end_pos = Backup_List.find(";", start_pos);
 	while (end_pos != string::npos && start_pos < Backup_List.size()) {
-		if (stop_backup.get_value() != 0)
+		if (Check_Backup_Cancel())
 			return -1;
 		backup_path = Backup_List.substr(start_pos, end_pos - start_pos);
 		part_settings.Part = Find_Partition_By_Path(backup_path);
@@ -1848,6 +1867,7 @@ int TWPartitionManager::Run_Backup(bool adbbackup) {
 }
 
 bool TWPartitionManager::Restore_Partition(PartitionSettings *part_settings) {
+	if (aera::pc::BackupCancelRequested()) return false;
 	time_t Start, Stop;
 
 	if (part_settings->adbbackup) {
@@ -1888,6 +1908,7 @@ bool TWPartitionManager::Restore_Partition(PartitionSettings *part_settings) {
 }
 
 int TWPartitionManager::Run_Restore(const string& Restore_Name) {
+	if (aera::pc::BackupCancelRequested()) return false;
 	PartitionSettings part_settings;
 	int check_digest;
 
@@ -1923,6 +1944,7 @@ int TWPartitionManager::Run_Restore(const string& Restore_Name) {
 	if (!Restore_List.empty()) {
 		end_pos = Restore_List.find(";", start_pos);
 		while (end_pos != string::npos && start_pos < Restore_List.size()) {
+			if (aera::pc::BackupCancelRequested()) return false;
 			restore_path = Restore_List.substr(start_pos, end_pos - start_pos);
 			part_settings.Part = Find_Partition_By_Path(restore_path);
 			if (part_settings.Part != NULL) {
@@ -1978,6 +2000,7 @@ int TWPartitionManager::Run_Restore(const string& Restore_Name) {
 	if (!Restore_List.empty()) {
 		end_pos = Restore_List.find(";", start_pos);
 		while (end_pos != string::npos && start_pos < Restore_List.size()) {
+			if (aera::pc::BackupCancelRequested()) return false;
 			restore_path = Restore_List.substr(start_pos, end_pos - start_pos);
 
 			part_settings.Part = Find_Partition_By_Path(restore_path);
@@ -2008,6 +2031,12 @@ int TWPartitionManager::Run_Restore(const string& Restore_Name) {
 }
 
 void TWPartitionManager::Set_Restore_Files(string Restore_Name) {
+  if (TWFunc::Path_Exists(Restore_Name + "/.aera-incomplete")) {
+    gui_print("This computer backup did not complete. Create a complete backup before restoring.\n");
+    DataManager::SetValue("tw_restore_list", "");
+    DataManager::SetValue("tw_restore_selected", "");
+    return;
+  }
 	// Start with the default values
 	string Restore_List;
 	bool get_date = true, check_encryption = true;

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "scene.hpp"
+#include "../../aera_remote/backup_cancel.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -31,10 +32,14 @@
 #include <androidfw/AssetManager.h>
 #include <androidfw/ResourceTypes.h>
 #include <json/json.h>
+#include <openssl/evp.h>
+#include <png.h>
 #include <utils/String8.h>
 
 #include "android_icon.hpp"
 #include "browser/runtime.hpp"
+#include "backup/app_vault.hpp"
+#include "backup/app_vault_progress.hpp"
 #include "ui_components.hpp"
 #include "src/misc/cache/instance/lv_image_cache.h"
 
@@ -138,7 +143,10 @@ struct State {
   std::vector<AndroidUser> users;
   std::vector<App> apps;
   std::vector<Snapshot> snapshot_items;
+  std::function<void(const AppVaultProgress &)> remote_progress;
 };
+
+std::string HumanBytes(uint64_t bytes);
 
 bool SafePackage(const char *name) {
   if (!name || !*name || strlen(name) > 255) return false;
@@ -332,7 +340,30 @@ void ReadAppMetadata(App &app) {
   }
 }
 
-std::vector<App> DiscoverApps(const std::atomic<bool> &cancel, int user_id) {
+std::string RemoteAppIcon(const App *app) {
+  if (!app || !app->icon) return {};
+  png_image image{};
+  image.version = PNG_IMAGE_VERSION;
+  image.width = kIconPixels;
+  image.height = kIconPixels;
+  image.format = PNG_FORMAT_BGRA;
+  png_alloc_size_t length = 0;
+  if (!png_image_write_to_memory(&image, nullptr, &length, 0,
+                                app->icon->pixels.data(), 0, nullptr) ||
+      length > 32768) return {};
+  std::vector<unsigned char> png(length);
+  if (!png_image_write_to_memory(&image, png.data(), &length, 0,
+                                app->icon->pixels.data(), 0, nullptr)) return {};
+  std::string encoded(4 * ((length + 2) / 3) + 1, '\0');
+  const int size = EVP_EncodeBlock(reinterpret_cast<unsigned char *>(encoded.data()),
+                                 png.data(), static_cast<int>(length));
+  if (size <= 0) return {};
+  encoded.resize(size);
+  return "data:image/png;base64," + encoded;
+}
+
+std::vector<App> DiscoverApps(const std::atomic<bool> &cancel, int user_id,
+                              bool metadata = true) {
   std::vector<App> apps;
   const std::string id = std::to_string(user_id);
   const std::vector<std::string> roots = {
@@ -377,7 +408,7 @@ std::vector<App> DiscoverApps(const std::atomic<bool> &cancel, int user_id) {
   }
   for (auto &app : apps) {
     if (cancel.load(std::memory_order_relaxed)) break;
-    ReadAppMetadata(app);
+    if (metadata) ReadAppMetadata(app);
   }
   std::sort(apps.begin(), apps.end(), [](const App &left, const App &right) {
     std::string left_name = left.name;
@@ -392,9 +423,13 @@ std::vector<App> DiscoverApps(const std::atomic<bool> &cancel, int user_id) {
 bool ValidRepository(const std::string &path) {
   if (path.empty() || path.size() > 1024 || path.find("..") != std::string::npos)
     return false;
+  const auto storages = RecoveryVolumes("storage");
   return path.compare(0, 8, "/sdcard/") == 0 ||
       path.compare(0, 14, "/data/media/0/") == 0 ||
-      path.compare(0, 9, "/mnt/nas/") == 0;
+      path.compare(0, 9, "/mnt/nas/") == 0 || path == "/pc" || path.compare(0, 4, "/pc/") == 0 ||
+      std::any_of(storages.begin(), storages.end(),
+                  [&](const Volume &volume) { return path.compare(0, volume.path.size() + 1,
+                                                        volume.path + "/") == 0; });
 }
 
 bool MakeDirectories(const std::string &path) {
@@ -436,22 +471,33 @@ void ParseProgressLine(State *state, const std::string &line) {
   Json::CharReaderBuilder builder;
   std::string errors;
   std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+  if (state->work != Work::kBackup && state->work != Work::kRestore) return;
+  ResticProgress counters;
   if (!reader->parse(line.data(), line.data() + line.size(), &message, &errors) ||
-      !message.isObject() || message["message_type"].asString() != "status")
+      !ReadResticProgress(message, state->work == Work::kRestore, counters))
     return;
 
-  if (message["percent_done"].isNumeric()) {
-    state->work_progress.store(static_cast<unsigned>(
-        std::clamp(message["percent_done"].asDouble() * 100.0, 0.0, 99.0)));
+  state->work_progress.store(counters.percent);
+  state->work_bytes_total.store(counters.bytes_total);
+  state->work_files_total.store(counters.files_total);
+  state->work_bytes_done.store(counters.bytes_done);
+  state->work_files_done.store(counters.files_done);
+  if (state->remote_progress) {
+    AppVaultProgress progress;
+    progress.percent = state->work_progress.load();
+    progress.stage = state->work == Work::kRestore ? "Restoring apps" : "Backing up selected apps\u2026";
+    if (counters.bytes_total)
+      progress.amount = HumanBytes(counters.bytes_done) + " / " + HumanBytes(counters.bytes_total);
+    else if (counters.bytes_done)
+      progress.amount = HumanBytes(counters.bytes_done);
+    progress.files_done = state->work_files_done.load();
+    progress.files_total = state->work_files_total.load();
+    if (message["current_files"].isArray()) {
+      for (const auto &file : message["current_files"])
+        if (file.isString() && !file.asString().empty()) { progress.current_file = file.asString(); break; }
+    } else if (message["current_file"].isString()) progress.current_file = message["current_file"].asString();
+    state->remote_progress(progress);
   }
-  state->work_bytes_total.store(message["total_bytes"].asUInt64());
-  state->work_files_total.store(message["total_files"].asUInt64());
-  state->work_bytes_done.store(
-      message.isMember("bytes_done") ? message["bytes_done"].asUInt64()
-                                      : message["bytes_restored"].asUInt64());
-  state->work_files_done.store(
-      message.isMember("files_done") ? message["files_done"].asUInt64()
-                                      : message["files_restored"].asUInt64());
 }
 
 bool WriteAll(int fd, const std::string &value) {
@@ -467,6 +513,7 @@ bool WriteAll(int fd, const std::string &value) {
 
 int RunRestic(State *state, const std::vector<std::string> &arguments,
               std::string &output) {
+  if (aera::pc::BackupCancelRequested()) { output = "Backup operation cancelled."; return -1; }
   const std::string program = state->runtime + "/usr/bin/restic";
   struct stat info{};
   if (lstat(program.c_str(), &info) || !S_ISREG(info.st_mode) || info.st_uid ||
@@ -495,12 +542,16 @@ int RunRestic(State *state, const std::vector<std::string> &arguments,
   }
   std::vector<std::string> values = {program, "--repo", state->repository,
                                      "--password-file", password_path};
+  if (state->remote_progress) values.push_back("--no-cache");
+  if (state->remote_progress && state->repository.compare(0, 3, "/pc") == 0 && state->work != Work::kBackup)
+    values.push_back("--no-lock");
   values.insert(values.end(), arguments.begin(), arguments.end());
   std::vector<char *> argv;
   for (auto &value : values) argv.push_back(value.data());
   argv.push_back(nullptr);
   const pid_t child = fork();
   if (!child) {
+    if (aera::pc::BackupOperationActive()) setpgid(0, 0);
     dup2(channel[1], STDOUT_FILENO);
     dup2(channel[1], STDERR_FILENO);
     close(channel[0]);
@@ -520,6 +571,7 @@ int RunRestic(State *state, const std::vector<std::string> &arguments,
     return -1;
   }
   state->child.store(child);
+  aera::pc::BackupChildCancellation cancellation(child);
   char buffer[8192];
   std::string pending;
   while (true) {
@@ -539,10 +591,11 @@ int RunRestic(State *state, const std::vector<std::string> &arguments,
   if (!pending.empty()) ParseProgressLine(state, pending);
   close(channel[0]);
   int status = 0;
+  cancellation.Stop();
   while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
   state->child.store(-1);
   unlink(password_path);
-  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  return !aera::pc::BackupCancelRequested() && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
 std::string PackageFromBackupPath(std::string path, int user_id) {
@@ -659,6 +712,7 @@ std::string UserTag(int user_id) {
 
 void Worker(State *state, Work work, std::vector<std::string> paths,
             int user_id) {
+  state->work = work;
   if (work == Work::kDiscover) {
     auto apps = DiscoverApps(state->cancel, user_id);
     {
@@ -682,6 +736,7 @@ void Worker(State *state, Work work, std::vector<std::string> paths,
         state->done.store(true);
         return;
       }
+      if (state->remote_progress) state->remote_progress({0, "Creating app backup repository", {}, 0, 0, {}});
       const int initialize = RunRestic(state, {"init"}, output);
       if (initialize) {
         std::lock_guard<std::mutex> lock(state->result_mutex);
@@ -697,7 +752,7 @@ void Worker(State *state, Work work, std::vector<std::string> paths,
                  UserTag(user_id), "--host", "aera-recovery"};
     arguments.insert(arguments.end(), paths.begin(), paths.end());
   } else if (work == Work::kRestore) {
-    arguments = {"restore", state->restore_snapshot, "--tag",
+    arguments = {"restore", state->restore_snapshot, "--json", "--tag",
                  std::string(kTag) + "," + UserTag(user_id), "--target", "/",
                  "--exclude-xattr", "security.selinux"};
     for (const auto &path : paths) {
@@ -726,7 +781,7 @@ void Worker(State *state, Work work, std::vector<std::string> paths,
     std::lock_guard<std::mutex> lock(state->result_mutex);
     if (!result) {
       state->result = work == Work::kBackup ? "App backup completed successfully." :
-          work == Work::kRestore ? "Latest app backup restored." :
+          work == Work::kRestore ? "App restore completed successfully." :
           "Backups refreshed.";
     } else {
       state->result = LastUsefulLine(output);
@@ -1342,6 +1397,86 @@ void Destroy(State *state) {
 }
 
 }  // namespace
+
+bool AppVaultInstalled() {
+  return web::PluginRuntimeInstalled(kPluginId, kPluginType, kPluginEntry);
+}
+
+bool RunAppVaultRemote(const JobRequest &request, Json::Value &result,
+                      const std::function<void(const AppVaultProgress &)> &progress) {
+  State state;
+  state.user_id = request.backup_user; state.repository = request.path;
+  state.remote_progress = progress;
+  const auto users = RecoveryAndroidUsers();
+  if (RecoveryDataLocked() || std::none_of(users.begin(), users.end(), [&](const AndroidUser &user) {
+        return user.id == state.user_id && user.decrypted;
+      }) || !AppVaultInstalled() || !ValidRepository(state.repository)) {
+    result["error"] = "Install App Backup Vault and unlock the selected Android user first.";
+    return false;
+  }
+  if (request.backup_action == "apps") {
+    progress({0, "Preparing your backup", {}, 0, 0, {}});
+    for (const auto &app : DiscoverApps(state.cancel, state.user_id)) {
+      Json::Value item; item["package"] = app.package; item["name"] = app.name;
+      item["icon"] = RemoteAppIcon(&app);
+      item["system"] = app.system; result["apps"].append(item);
+    }
+    return true;
+  }
+  progress({0, "Preparing backup engine\u2026", {}, 0, 0, {}});
+  struct Cleanup {
+    State &state;
+    ~Cleanup() { web::RemoveRuntime(state.runtime.empty() ? state.preparation.directory : state.runtime); }
+  } cleanup{state};
+  web::PreparePluginRuntime(state.preparation, kPluginId, kPluginType, kPluginEntry);
+  if (!state.preparation.verified) { result["error"] = state.preparation.error; return false; }
+  state.runtime = state.preparation.directory;
+  if (request.backup_action == "snapshots")
+    state.apps = DiscoverApps(state.cancel, state.user_id);
+  progress({0, "Reading app backups", {}, 0, 0, {}});
+  Worker(&state, Work::kRefresh, {}, state.user_id);
+  if (!state.work_success.load()) { result["error"] = state.result; return false; }
+  if (request.backup_action == "snapshots") {
+    for (const auto &snapshot : state.snapshot_items) {
+      Json::Value item; item["id"] = snapshot.id; item["time"] = snapshot.time;
+      item["bytes"] = Json::UInt64(snapshot.bytes);
+      for (const auto &app : snapshot.apps) {
+        Json::Value value; value["package"] = app.package; value["name"] = app.name;
+        value["icon"] = RemoteAppIcon(InstalledApp(&state, app.package));
+        item["apps"].append(value);
+      }
+      result["snapshots"].append(item);
+    }
+    return true;
+  }
+  std::vector<std::string> paths;
+  std::set<std::string> selected(request.partitions.begin(), request.partitions.end()), found;
+  if (request.backup_action == "backup") {
+    for (const auto &app : DiscoverApps(state.cancel, state.user_id, false)) {
+      if (!selected.count(app.package)) continue;
+      found.insert(app.package); paths.insert(paths.end(), app.paths.begin(), app.paths.end());
+    }
+  } else if (request.backup_action == "restore") {
+    const auto snapshot = std::find_if(state.snapshot_items.begin(), state.snapshot_items.end(),
+        [&](const Snapshot &item) { return item.id == request.backup_snapshot; });
+    if (snapshot == state.snapshot_items.end()) { result["error"] = "Select a snapshot for this Android user."; return false; }
+    state.restore_snapshot = snapshot->id;
+    for (const auto &app : snapshot->apps) {
+      if (!selected.count(app.package)) continue;
+      found.insert(app.package); paths.insert(paths.end(), app.paths.begin(), app.paths.end());
+    }
+  } else { result["error"] = "Unknown app backup operation."; return false; }
+  if (paths.empty() || found != selected) { result["error"] = "Select available apps for this Android user."; return false; }
+  progress({0, request.backup_action == "backup" ? "Backing up selected apps\u2026" : "Restoring apps", {}, 0, 0, {}});
+  state.work_progress.store(0);
+  state.work_bytes_done.store(0); state.work_bytes_total.store(0);
+  state.work_files_done.store(0); state.work_files_total.store(0);
+  Worker(&state, request.backup_action == "backup" ? Work::kBackup : Work::kRestore,
+         paths, state.user_id);
+  result["detail"] = state.result;
+  if (!state.work_success.load()) result["error"] = state.result;
+  return state.work_success.load();
+}
 
 void BuildAppVaultScene(lv_obj_t *screen, ActionCallback callback,
                         void *context) {

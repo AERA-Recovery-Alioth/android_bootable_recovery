@@ -27,11 +27,15 @@ static Status pc_status;
 bool SetEnabled(bool enabled, int, bool) { pc_status.enabled = enabled; return true; }
 Status GetStatus() { return pc_status; }
 bool ForgetComputers() { return true; }
+BackupCancellation GetBackupCancellation() { return {}; }
+static bool pc_finalizing = false;
+BackupTransferStatistics GetBackupTransferStatistics() { return {120000000, 87500000, pc_finalizing, pc_finalizing ? 5U : 0U}; }
+bool CancelBackup(const std::string &, bool) { return false; }
 }
 static std::string backup_root;
 static std::string file_root;
-static bool preferences[10] = {true, false, true, true, false, false, false, true,
-                               true, false};
+static bool preferences[12] = {true, false, true, true, false, false, false, true,
+                               true, false, true, true};
 static int utc_offset = 120;
 static uint32_t accent_color = design::kDefaultAccentRgb;
 static bool light_mode = false;
@@ -248,7 +252,8 @@ std::vector<PayloadFlashTarget> RecoveryPayloadTargets(const std::vector<std::st
 }
 std::string installer_status;
 int RecoveryProgress() { return recovery_progress; }
-std::string RecoveryOperationDetail() { return "Backing up / Boot\n38MB of 100MB (38%)"; }
+std::string operation_detail = "Backing up / Boot\n38MB of 100MB (38%)";
+std::string RecoveryOperationDetail() { return operation_detail; }
 std::string RecoveryInstallerStatus() { return installer_status; }
 InstallerPresentation RecoveryInstallerPresentation() { return {}; }
 InstallerPrompt RecoveryInstallerPrompt() { return {}; }
@@ -490,6 +495,86 @@ int main(int argc,char **argv) {
     assert(png_image_write_to_file(&image,path,0,frame.data(),0,nullptr));
   };
   auto *screen=lv_screen_active();
+  if (!strcmp(argv[1], "--pc-backup-progress")) {
+    for (const char *language : {"en", "de_DE"}) {
+      assert(i18n::SetLanguage(language));
+      for (const bool restore : {false, true}) {
+        lv_obj_clean(screen);
+        JobRequest request;
+        request.job = Job::kPcBackupOperation;
+        request.title = "App Backup Vault";
+        request.backup_kind = "apps";
+        request.backup_action = restore ? "restore" : "backup";
+        request.backup_source = "computer";
+        auto operation = BuildJobScene(screen, request, RecordAction, nullptr);
+        assert(std::string(lv_label_get_text(operation.status)) != i18n::Translate("Preparing installation"));
+        operation_detail = "Creating app backup repository";
+        RefreshOperationScene(operation);
+        assert(operation.transfer_speed && !strcmp(lv_label_get_text(operation.transfer_speed), "87.5 MB/s"));
+        Tick();AssertContained(operation.transfer_speed, lv_obj_get_parent(operation.transfer_speed));
+        assert(!strcmp(lv_label_get_text(operation.status), i18n::Translate("Creating app backup repository")));
+        operation_detail = "Restoring apps\nWorking...\n2 / 4";
+        RefreshOperationScene(operation);
+        assert(!strcmp(lv_label_get_text(operation.metrics), i18n::Translate("Working...")));
+        assert(std::string(lv_label_get_text(operation.files)).find("2 / 4") != std::string::npos);
+        operation_detail = std::string(restore ? "Restoring apps" : "Backing up selected apps\u2026") +
+            "\n12 MB / 24 MB\n47 / 123\n/data/user/0/com.spotify.music/files/test.db";
+        RefreshOperationScene(operation);
+        assert(std::string(lv_label_get_text(operation.status)) == (restore
+            ? i18n::Format("Restoring %s", i18n::Translate("Apps")) : i18n::Translate("Backing up selected apps\u2026")));
+        if (!strcmp(language, "de_DE") && !restore)
+          assert(strcmp(lv_label_get_text(operation.status), "Backing up selected apps\u2026"));
+        assert(!strcmp(lv_label_get_text(operation.metrics), "12 MB / 24 MB"));
+        assert(std::string(lv_label_get_text(operation.files)).find("47 / 123") != std::string::npos);
+        assert(std::string(lv_label_get_text(operation.activity_summary)).find("com.spotify.music") != std::string::npos);
+        Tick();AssertContained(operation.activity_summary, lv_obj_get_parent(operation.activity_summary));
+        if (!restore && !strcmp(language, "de_DE")) save("/tmp/aera-pc-app-backup-progress.png");
+        aera::pc::pc_finalizing = true;
+        RefreshOperationScene(operation);Tick();
+        assert(!strcmp(lv_label_get_text(operation.status), i18n::Translate("Saving file on computer")));
+        assert(!strcmp(lv_label_get_text(operation.detail), i18n::Translate("Keep the browser open while the computer finishes saving.")));
+        assert(!strcmp(lv_label_get_text(operation.percent), i18n::Translate("Working...")));
+        assert(operation.progress_pulse && !lv_obj_has_flag(operation.progress_pulse, LV_OBJ_FLAG_HIDDEN));
+        aera::pc::pc_finalizing = false;
+        RefreshOperationScene(operation);
+        assert(lv_obj_has_flag(operation.progress_pulse, LV_OBJ_FLAG_HIDDEN));
+        aera::pc::pc_finalizing = true;
+        RefreshOperationScene(operation);
+        assert(!lv_obj_has_flag(operation.progress_pulse, LV_OBJ_FLAG_HIDDEN));
+        if (!restore && !strcmp(language, "de_DE")) save("/tmp/aera-pc-finalizing.png");
+        aera::pc::pc_finalizing = false;
+        CompleteOperationScene(operation, true, restore ? "App restore completed successfully." : "App backup completed successfully.");
+      }
+    }
+    for (const char *language : {"en", "de_DE", "zh_CN"}) {
+      assert(i18n::SetLanguage(language));
+      for (auto size : {InterfaceSize::kSmall, InterfaceSize::kNormal, InterfaceSize::kLarge, InterfaceSize::kSpacious}) {
+        interface_size=size;design::ApplyInterfaceSize(static_cast<int>(size));
+        for (bool landscape : {false,true}) {
+          lv_display_set_resolution(display, landscape?3168:1440, landscape?1440:3168);
+          for (bool restore : {false,true}) {
+            lv_obj_clean(screen);
+            JobRequest request;request.job=Job::kPcBackupOperation;request.title="Recovery backup";
+            request.backup_kind="recovery";request.backup_source="computer";request.backup_action=restore?"restore":"backup";
+            auto operation=BuildJobScene(screen,request,RecordAction,nullptr);
+            const char *partition="Super (system system_ext product vendor)";
+            operation_detail=std::string("backing / ")+partition+"\n4584MB of 18032MB (25%)";
+            RefreshOperationScene(operation);Tick(2);
+            assert(std::string(lv_label_get_text(operation.status))==i18n::Format(restore?"Restoring %s":"Backing up %s",partition));
+            lv_area_t title,detail,percent;
+            lv_obj_get_coords(operation.status,&title);lv_obj_get_coords(operation.detail,&detail);lv_obj_get_coords(operation.percent,&percent);
+            assert(title.y2<detail.y1 && detail.y2<percent.y1);
+            AssertContained(operation.status,lv_obj_get_parent(operation.status));
+            AssertContained(operation.detail,lv_obj_get_parent(operation.detail));
+            AssertContained(operation.destination,lv_obj_get_parent(operation.destination));
+            if(!landscape&&restore&&size==InterfaceSize::kSpacious&&!strcmp(language,"en"))save("/tmp/aera-pc-long-restore.png");
+            CompleteOperationScene(operation,true,"Everything finished successfully.");
+          }
+        }
+      }
+    }
+    std::filesystem::remove_all(backup_root);return 0;
+  }
   if (!strcmp(argv[1], "--payload-parallel") || !strcmp(argv[1], "--payload-parallel-landscape")) {
     const bool landscape = !strcmp(argv[1], "--payload-parallel-landscape");
     if (landscape) lv_display_set_resolution(display, 3168, 1440);
@@ -1286,6 +1371,8 @@ int main(int argc,char **argv) {
       {"Verify ZIP signatures",Preference::kVerifyZip},{"Compress backups by default",Preference::kCompression},
       {"Keep AERA installed",Preference::kPreserveRecovery},
       {"Keep current ABL",Preference::kPreserveAbl},
+      {"Generate backup checksums",Preference::kBackupChecksums},
+      {"Verify backup checksums",Preference::kVerifyBackupChecksums},
       {"SHA-256 backup checksums",Preference::kSha256}}) {
     const bool old=RecoveryPreference(item.second);
     auto *toggle=FindPreferenceEntry(prefs,item.first); assert(toggle);

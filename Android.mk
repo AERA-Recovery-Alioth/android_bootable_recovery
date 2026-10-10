@@ -58,6 +58,7 @@ LOCAL_SRC_FILES := \
     aera_rpc/aera_protocol.cpp \
     aera_remote/aera_remote.cpp \
     aera_remote/pc_connection.cpp \
+    aera_remote/pc_storage.cpp \
     aera_remote/frame_broker.cpp \
     aera_remote/input.cpp \
     aeraui/features/plugin_api/operations.cpp \
@@ -70,6 +71,8 @@ LOCAL_C_INCLUDES += \
     external/jsoncpp/include
 
 ifeq ($(OF_ENABLE_WLAN),1)
+LOCAL_STATIC_LIBRARIES += libfusetwrp
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/fuse/include
 LOCAL_SRC_FILES += \
     wlan.cpp \
     aera_wifi_dispatcher.cpp \
@@ -878,12 +881,12 @@ endif
 ifneq ($(TW_NO_EXFAT), true)
     include $(commands_TWRP_local_path)/exfat/mkfs/Android.mk \
             $(commands_TWRP_local_path)/exfat/fsck/Android.mk \
-            $(commands_TWRP_local_path)/fuse/Android.mk \
             $(commands_TWRP_local_path)/exfat/libexfat/Android.mk
     ifneq ($(TW_NO_EXFAT_FUSE), true)
         include $(commands_TWRP_local_path)/exfat/fuse/Android.mk
     endif
 endif
+include $(commands_TWRP_local_path)/fuse/Android.mk
 ifneq ($(TW_OEM_BUILD),true)
     include $(commands_TWRP_local_path)/orscmd/Android.mk
 endif

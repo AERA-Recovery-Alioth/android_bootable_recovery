@@ -16,7 +16,8 @@ import unittest
 class PcConnectionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temporary = tempfile.TemporaryDirectory(prefix="pc-storage-", dir=sys.argv[2])
+        # /tmp may be tmpfs, which the production upload path intentionally rejects.
+        cls.temporary = tempfile.TemporaryDirectory(prefix="pc-storage-", dir=pathlib.Path.home())
         cls.root = pathlib.Path(cls.temporary.name)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
@@ -118,6 +119,21 @@ class PcConnectionTest(unittest.TestCase):
         connection.request("GET", "/api/hello")
         self.assertEqual(connection.getresponse().status, 200)
         connection.close()
+
+    def test_01b_status_reuses_the_same_tls_socket(self):
+        connection = http.client.HTTPSConnection("127.0.0.1", self.port, context=self.context, timeout=8)
+        connection.connect()
+        original_socket = connection.sock
+        try:
+            for _ in range(3):
+                connection.request("GET", "/api/status", headers={"Authorization": "Bearer " + self.token})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("Connection"), "keep-alive")
+                response.read()
+                self.assertIs(connection.sock, original_socket)
+        finally:
+            connection.close()
 
     def test_02_partial_or_bad_upload_cannot_install(self):
         data = b"fixture-data" * 8192
@@ -338,6 +354,23 @@ class PcConnectionTest(unittest.TestCase):
                 self.assertEqual(result["install_method"], "fast")
                 self.assertEqual(result["partition"], "")
                 self.assertEqual(result["payload_partitions"], ["system", "vendor", "xbl_config"])
+                self.assertNotIn("payload_progress", result)
+                if mode == "same":
+                    self.command("run")
+                    live = self.wait_phase("installing")["payload_progress"]
+                    self.assertTrue(live["available"])
+                    self.assertEqual(live["lanes"], 2)
+                    parts = live["partitions"]
+                    self.assertEqual(parts[0], {"name": "system", "bytes": 200000000,
+                                              "done": 100000000, "phase": "writing", "percent": 50})
+                    self.assertEqual(parts[1]["phase"], "verifying")
+                    self.assertEqual(parts[1]["percent"], 25)
+                    self.assertEqual(parts[2]["percent"], 100)
+                    self.assertEqual(parts[4]["phase"], "not_flashed")
+                    self.assertEqual(parts[5]["phase"], "failed")
+                    self.assertEqual(self.wait_phase("completed")["payload_progress"], live)
+                    self.command("hold")
+                    continue
             self.assertEqual(self.request("/api/cancel", {"id": job["id"]})[0], 200)
         status, prepared = self.prepare(b"not a payload")
         self.assertEqual(status, 200)
@@ -423,6 +456,79 @@ class PcConnectionTest(unittest.TestCase):
         self.assertTrue(image.exists())
         self.assertTrue(package.exists())
         self.command("hold")
+
+    def test_05f_backup_stream_uses_browser_blocks(self):
+        body = dict(action="backup", kind="recovery", source="computer", method="stream",
+                    name="PC-Test", partitions=["/data"], folder_ready=True, confirm=True)
+        self.assertEqual(self.request("/api/backups", {**body, "confirm": False})[0], 400)
+        self.assertEqual(self.request("/api/backups", {**body, "user": "wrong"})[0], 400)
+        self.assertEqual(self.request("/api/backups", {**body, "folder_ready": False})[0], 400)
+        self.assertEqual(self.request("/api/backups", {**body, "partitions": []})[0], 400)
+        status, job = self.request("/api/backups", body)
+        self.assertEqual((status, job["phase"], job["backup_action"]), (200, "queued", "backup"))
+        self.command("run")
+        self.wait_phase("installing")
+        self.assertEqual(self.request("/api/forget", {})[0], 409)
+        total = 0
+        connection = http.client.HTTPSConnection("127.0.0.1", self.port, context=self.context, timeout=8)
+        transport = None
+        def storage_request(path, body=None, raw=False):
+            nonlocal transport
+            headers = {"Authorization": "Bearer " + self.token}
+            if body is not None:
+                body = json.dumps(body).encode();headers["Content-Type"] = "application/json"
+            connection.request("POST" if body is not None else "GET", path, body, headers)
+            response = connection.getresponse();data = response.read()
+            if response.status == 200:
+                self.assertEqual(response.getheader("Connection"), "keep-alive")
+                if transport is None:transport = connection.sock
+                self.assertIs(connection.sock, transport)
+            return response.status, data if raw else json.loads(data) if data else {}
+        while True:
+            status, request = storage_request("/api/backups/io")
+            if status == 409:
+                break
+            self.assertEqual(status, 200)
+            if not request:
+                continue
+            reply = {}
+            if request["op"] == "stat":
+                reply = dict(directory=True, size=0, mtime=0)
+            elif request["op"] == "write":
+                status, data = storage_request("/api/backups/io/" + str(request["id"]), raw=True)
+                self.assertEqual(status, 200)
+                self.assertEqual(data, bytes([ord("a") + total // 8388608]) * 8388608)
+                total += len(data)
+            self.assertEqual(storage_request("/api/backups/io/" + str(request["id"]), reply)[0], 200)
+        connection.close()
+        completed = self.wait_phase("completed")
+        self.assertEqual(completed["backup_transfer"]["bytes"], 8 * 8388608)
+        self.assertEqual(completed["backup_transfer"]["bytes_per_second"], 0)
+        self.assertEqual(total, 8 * 8388608)
+        self.assertEqual(completed["backup_result"]["folder"], "AERA/BACKUPS/test-device/PC-Test")
+        status, job = self.request("/api/backups", {**body, "kind": "apps", "action": "apps", "folder_ready": False})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.wait_phase("completed")["backup_result"]["apps"][0]["package"], "test.app")
+
+    def test_05g_backup_and_restore_cancellation(self):
+        body = dict(action="backup", kind="recovery", source="computer", method="stream",
+                    name="Cancel-Test", partitions=["/data"], folder_ready=True, confirm=True)
+        self.command("run")
+        for restore in [False, True]:
+            status, job = self.request("/api/backups", {**body, "action": "restore" if restore else "backup"})
+            self.assertEqual(status, 200)
+            self.wait_phase("installing")
+            self.assertEqual(self.request("/api/backups/cancel", {"id": 123, "confirm": True})[0], 400)
+            self.assertEqual(self.request("/api/backups/cancel", {"id": "stale", "confirm": True})[0], 403)
+            if restore:
+                self.assertEqual(self.request("/api/backups/cancel", {"id": job["id"], "confirm": True})[0], 409)
+            status, cancelled = self.request("/api/backups/cancel", {
+                "id": job["id"], "confirm": True, "acknowledge_partial_restore": restore})
+            self.assertEqual(status, 200)
+            final = self.wait_phase("cancelled")
+            self.assertTrue(final["cancel_requested"])
+            self.assertNotEqual(final["result"], 0)
+            self.assertIn("partially restored" if restore else "unfinished", final["detail"])
 
     def test_06_remember_restart_and_forget(self):
         self.command("restart")

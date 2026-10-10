@@ -9,6 +9,124 @@ preferences and runs after unlock, even without Wi-Fi, not before decryption.
 This feature does not require a PC application, wireless ADB or a new device-tree
 flag. It uses the existing WLAN build option, OpenSSL and JSON dependencies.
 
+## Backup And Restore
+
+The **Backups** tab controls native recovery backups and the installed **App
+Backup Vault**. Choose **This computer** or **Device storage** independently of
+USB or Wi-Fi access. Partition selection, compression, app selection, decrypted
+Android users and Vault snapshots use the existing recovery engines.
+
+- **Computer backup:** choose a writable folder in a browser supporting the
+  File System Access directory picker (desktop Chromium browsers). Recovery
+  exposes that folder temporarily through FUSE at `/pc`. File operations cross
+  the authenticated HTTPS connection in bounded blocks of at most 8 MiB.
+  No complete backup or disk-sized staging file is kept on the phone or in RAM.
+  Keep the browser open until the operation finishes. Browser disk permission
+  and device approval are separate; disk-full errors fail the operation.
+  Reloading the page interrupts the stream. Folder handles are remembered
+  locally by the browser; access is reused when permission is still granted,
+  otherwise **Use previous folder** requests access again. Browser profiles
+  and website origins have separate permissions.
+  Small writes are combined into bounded 8 MiB blocks per open file and
+  flushed on synchronization or close. Browser disk writes overlap the next
+  network block within one global 16 MiB queue. Small reads use 4 MiB read-ahead
+  block, including the existing native checksum reader. Completion is never
+  reported before all outstanding writes have been delivered.
+  Large-file close/rename commits show **Saving file on computer** with an
+  animated progress indicator, rather than treating transferred 100% as success.
+  They may take up to ten minutes while the browser storage pump sends a
+  heartbeat; ninety seconds without a heartbeat fails the operation. Ordinary
+  filesystem requests retain their 45-second timeout. Closing or reloading the
+  browser still interrupts the stream; cancellation remains available.
+  Backup block requests reuse HTTPS connections instead of negotiating TLS
+  again for each block; acknowledgements carry the next request, avoiding a
+  separate polling round trip for every block. Every request is still authenticated. Automatic
+  native backup names refresh between attempts, without reloading the page.
+  Status polling and storage heartbeats also reuse HTTPS connections, so a
+  control request does not close a pooled data socket. Browser filesystem
+  failures retain their original exception name/message in the recovery log
+  and final operation result instead of only reporting a generic I/O error.
+- **Device backup:** writes to the selected mounted storage using the ordinary
+  recovery location, without sending backup data to the computer. Device mode
+  remains available in browsers without the directory picker.
+- **Transfer speed:** the phone and browser show the same four-second smoothed
+  PC backup/restore rate in decimal MB/s (1 MB = 1,000,000 bytes). The browser
+  also shows transferred MB. Counters track successfully exchanged file data,
+  including checksum reads; they are not a forecast of the final backup size.
+- **Cancellation:** backups can be stopped from the browser or the phone.
+  Restore cancellation requires two explicit warnings; the phone uses swipe
+  confirmations. Cancellation stops the backup worker, not the recovery UI.
+  Restore cancellation is not rollback: remain in recovery and complete a
+  full restore before booting Android. Native unfinished backups are marked
+  incomplete; App Vault keeps Restic's existing transactional snapshot format.
+- Native backups retain `.win`/split archives, `.info` files and digests at
+  `AERA/BACKUPS/<device>/<backup-name>/`. They can be copied from the computer
+  to ordinary device storage and restored with the native recovery UI.
+  Unfinished computer backups retain `.aera-incomplete` and cannot be selected
+  for restore. Remove the failed backup and create a new one rather than
+  removing the marker and treating incomplete files as a valid backup.
+- App backups retain the existing encrypted Restic repository at
+  `AERA/AppBackupVault`, including the recovery password and user-specific
+  snapshot tags. Copy the complete repository, not individual pack files.
+  Restore still targets the original decrypted Android user ID; this feature
+  does not add cross-user remapping or a different Vault format. Vault must be
+  installed on the phone; no plugin update is required for PC controls.
+  Without the plugin, the **Apps** backup type is disabled. App names and icons
+  come from the same APK metadata reader used on the phone. Icons are loaded
+  once per discovery, separately from progress polling; unreadable icons use
+  an initial instead. Restore lists use installed app metadata when available.
+- For **computer restore**, choose the original destination folder, an
+  `AERA/BACKUPS` folder, a device backup folder or a specific native backup.
+  Multiple native backups are listed for explicit selection; unfinished
+  folders marked `.aera-incomplete` are excluded. The chosen backup is still
+  inspected by the recovery engine before restore. App
+  restore accepts either the original destination folder or its nested
+  `AERA/AppBackupVault` repository; the resolved folder is shown in the browser.
+  **Advanced > Restore method** chooses direct streaming
+  or **Transfer first, then restore**. The latter needs device storage large
+  enough for the full source, uses a unique `AERA/PCTransfers/backup-*` directory,
+  and disconnects the PC filesystem before restore. Native digests are checked
+  before native restore writes when **Verify backup checksums** is enabled,
+  and Vault uses Restic's normal integrity checks.
+  Staging on storage erased by the selected restore is rejected.
+- A streaming restore is different from staged ZIP installation: a connection
+  failure can leave partially restored data. Recovery reports failure, not
+  success; remain in recovery and retry a complete restore. A staged restore
+  can continue without the browser once transfer finishes. Neither mode
+  automatically switches slots or reboots after restoring.
+- Actual backup/restore jobs show the operation/progress page on the phone;
+  discovery and inspection stay headless. Other critical actions remain
+  blocked until the job finishes.
+  App operations show engine preparation, repository creation, backup reading
+  and backup/restore phases, with processed bytes, file counts and the current
+  file when Restic reports it. They do not use installation status labels.
+- **Preferences > Generate backup checksums** controls native checksum
+  generation on device and computer storage, including its early preference
+  cache. **Verify backup checksums** controls the separate native restore
+  verification step. Disabling it removes this pre-write corruption check;
+  it does not disable other archive or filesystem errors. Vault still uses Restic's
+  intrinsic integrity checks and unchanged encrypted repository format.
+
+The `/pc` storage target exists only during its owning browser's job and is
+removed afterward. Other browsers cannot service its I/O requests. Only one
+backup or other critical recovery operation may run at a time. Computer-folder
+contents are not exposed by the general device file browser.
+
+Computer backups remain Beta. An intermittent browser file-commit error has
+been observed at the end of large backups; its underlying cause is not yet
+resolved. The original browser error is reported and the incomplete backup is
+not treated as successful. Do not use an incomplete backup for restore.
+
+### Development Checks
+
+`aeraui/tests` includes a host HTTPS fixture and a bounded-block/ownership test.
+The HTTPS test simulates the installer and never opens device partitions. The
+optional `pc_backup_browser_test.py` uses Playwright, desktop Chrome and an
+in-memory PC folder to exercise streaming write/readback and both storage modes.
+`pc_storage_fuse_test.cpp` checks real host FUSE I/O, close, unlink and disconnect;
+run it only as root in a private mount namespace, never on a phone. These tests
+do not replace an actual native backup/restore and Vault test on the recovery.
+
 ## USB Access
 
 Enable Menu > PC connection, connect the USB cable, then run:
@@ -80,6 +198,10 @@ may need to be set up again after reconnecting to recovery.
   extraction and explicit manual IMG flashing are also allowed. Fast flash never
   overrides protection. The browser displays its
   selected method, target slot and protection settings before confirmation.
+  Fast and direct payload flashes also show the native live partition progress:
+  stable rows with individual percentages, sizes in MB, write/readback phases,
+  verified counts, failures and targets that were not flashed. This view uses the
+  common progress store and does not change the flash or verification procedure.
 - The first device approval is physical. Subsequent installation confirmations
   and structured AERA installer questions are handled in the authorized browser.
   This does not automate arbitrary third-party installers' hardware-key prompts.

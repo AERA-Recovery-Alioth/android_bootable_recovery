@@ -18,6 +18,7 @@
 
 
 #include <fcntl.h>
+#include <cerrno>
 #include <string>
 #include <unistd.h>
 #include "data.hpp"
@@ -215,6 +216,8 @@ bool twrpDigestDriver::Make_Digest(string Full_Filename) {
 	return true;
 }
 
+#include "aera_remote/backup_cancel.hpp"
+
 bool twrpDigestDriver::stream_file_to_digest(string filename, twrpDigest* digest) {
 	char buf[4096];
 	int bytes;
@@ -224,6 +227,12 @@ bool twrpDigestDriver::stream_file_to_digest(string filename, twrpDigest* digest
 		return false;
 	}
 	while ((bytes = read(fd, &buf, sizeof(buf))) != 0) {
+		if (aera::pc::BackupCancelRequested()) { close(fd); return false; }
+		if (bytes < 0) {
+			if (errno == EINTR) continue;
+			close(fd);
+			return false;
+		}
 		digest->update((unsigned char*)buf, bytes);
 	}
 	close(fd);
@@ -267,4 +276,3 @@ int twrpDigestDriver::Run_Digest() { //translate
 
 	return ret_val;
 }
-

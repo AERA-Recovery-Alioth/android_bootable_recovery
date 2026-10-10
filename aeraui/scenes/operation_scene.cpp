@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "scene.hpp"
+#include "../../aera_remote/pc_connection.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -116,6 +117,7 @@ const char *InitialTitle(Job job) {
     case Job::kExtractPayload: return "Extracting selected images";
     case Job::kFlashPayload: return "Preparing selected partitions";
     case Job::kBackup: return "Preparing your backup";
+    case Job::kPcBackupOperation: return "Preparing your backup";
     case Job::kUploadBackup: return "Preparing network upload";
     case Job::kRestore: return "Preparing to restore";
     case Job::kWipe: return "Preparing to wipe";
@@ -135,6 +137,7 @@ const char *OperationSymbol(Job job) {
     case Job::kFlashPayload: return LV_SYMBOL_UPLOAD;
     case Job::kExtractPayload: return LV_SYMBOL_SAVE;
     case Job::kBackup: return LV_SYMBOL_SAVE;
+    case Job::kPcBackupOperation: return LV_SYMBOL_SAVE;
     case Job::kUploadBackup: return LV_SYMBOL_UPLOAD;
     case Job::kRestore: return LV_SYMBOL_REFRESH;
     case Job::kWipe:
@@ -158,6 +161,18 @@ void SetProgressPulseOpacity(void *target, int32_t opacity) {
 
 void SetIndeterminateProgressX(void *target, int32_t x) {
   lv_obj_set_x(static_cast<lv_obj_t *>(target), x);
+}
+void StartIndeterminateProgress(lv_obj_t *target) {
+  lv_anim_t pulse;
+  lv_anim_init(&pulse);
+  lv_anim_set_var(&pulse, target);
+  lv_anim_set_values(&pulse, 48, 1024);
+  lv_anim_set_duration(&pulse, 1100);
+  lv_anim_set_playback_duration(&pulse, 1100);
+  lv_anim_set_repeat_count(&pulse, LV_ANIM_REPEAT_INFINITE);
+  lv_anim_set_path_cb(&pulse, lv_anim_path_ease_in_out);
+  lv_anim_set_exec_cb(&pulse, SetIndeterminateProgressX);
+  lv_anim_start(&pulse);
 }
 
 constexpr const char *kRomInstallerStepTitles[4] = {
@@ -277,7 +292,7 @@ FriendlyProgress Explain(const std::string &raw, Job job, int progress) {
     value.explanation = "AERA is checking the backup so it can be restored reliably later.";
     value.activity = "Reading the completed archive and validating its integrity.";
     value.step = 2;
-  } else if (job == Job::kBackup || all.find("backing") != std::string::npos) {
+  } else if (job == Job::kBackup || (job != Job::kRestore && all.find("backing") != std::string::npos)) {
     value.title = i18n::Format("Backing up %s", subject.c_str());
     value.explanation = "AERA is safely copying the selected data into your new backup.";
     value.activity = i18n::Format(
@@ -484,6 +499,26 @@ void BuildInstallerPrompt(OperationScene *scene, lv_obj_t *screen,
                   landscape ? 820 : 552, 142);
 }
 
+void ReflowOperationHeader(const OperationScene &scene) {
+  auto *card = lv_obj_get_parent(scene.status);
+  const bool landscape = Landscape(lv_obj_get_parent(card));
+  lv_obj_update_layout(card);
+  lv_obj_set_y(scene.detail, std::max(112,
+      static_cast<int>(lv_obj_get_y(scene.status) + lv_obj_get_height(scene.status)) + 12));
+  lv_obj_update_layout(card);
+  const int extra = std::max(0,
+      static_cast<int>(lv_obj_get_y(scene.detail) + lv_obj_get_height(scene.detail)) + 16 - 222);
+  lv_obj_set_y(scene.percent, 222 + extra);
+  lv_obj_align(scene.elapsed, LV_ALIGN_TOP_RIGHT, -48, 246 + extra);
+  lv_obj_set_y(scene.progress, 310 + extra);
+  if (scene.progress_pulse) lv_obj_set_y(scene.progress_pulse, 314 + extra);
+  lv_obj_set_y(scene.metrics_panel, 390 + extra);
+  if (scene.transfer_speed) lv_obj_set_y(scene.transfer_speed, 600 + extra);
+  lv_obj_set_y(scene.destination, 650 + extra);
+  lv_obj_set_height(card, (landscape ? 850 : 756) + extra);
+  if (!landscape) lv_obj_set_y(scene.activity_panel, 1230 + extra);
+}
+
 }  // namespace
 
 void SetJobRequest(const JobRequest &request) { gRequest = request; }
@@ -494,6 +529,8 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
   Header(screen, request.title.c_str(), "Progress & activity", nullptr, nullptr);
   OperationScene result;
   result.job = request.job;
+  result.pc_restore = request.backup_action == "restore";
+  result.pc_app_backup = request.job == Job::kPcBackupOperation && request.backup_kind == "apps";
   result.payload_parallel = request.job == Job::kFlashPayload && request.payload_direct;
   result.format_data = request.job == Job::kFormatData;
   const bool installer =
@@ -526,7 +563,8 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
     lv_obj_set_style_border_color(result.activity, kAccent, 0);
     lv_obj_set_style_border_opa(result.activity, LV_OPA_30, 0);
   }
-  auto *activity_icon = Label(result.activity, OperationSymbol(request.job),
+  auto *activity_icon = Label(result.activity, request.job == Job::kPcBackupOperation && result.pc_restore
+      ? LV_SYMBOL_REFRESH : OperationSymbol(request.job),
                               &lv_font_montserrat_48, kAccent);
   lv_obj_center(activity_icon);
   if (!installer) {
@@ -542,13 +580,19 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
     lv_anim_start(&breathe);
   }
 
-  result.status = Label(card, InitialTitle(request.job), &lv_font_montserrat_48, kText);
+  result.status = Label(card, request.job == Job::kPcBackupOperation && result.pc_restore
+      ? "Preparing to restore" : InitialTitle(request.job), &lv_font_montserrat_48, kText);
   lv_obj_set_pos(result.status, installer ? 176 : 208, 42);
   lv_obj_set_width(result.status, installer ? 1042 : 1010);
   lv_label_set_long_mode(result.status, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_max_height(result.status,
+      2 * lv_font_get_line_height(lv_obj_get_style_text_font(result.status, LV_PART_MAIN)), 0);
   result.detail = Label(card, "Waiting for the recovery backend to begin.", &lv_font_montserrat_24, kMuted);
   lv_obj_set_pos(result.detail, installer ? 176 : 208, 112);
   lv_obj_set_width(result.detail, installer ? 1042 : 1010);
+  lv_label_set_long_mode(result.detail, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_max_height(result.detail,
+      2 * lv_font_get_line_height(lv_obj_get_style_text_font(result.detail, LV_PART_MAIN)), 0);
 
   result.percent = Label(card, "0%", &lv_font_montserrat_48, kAccent);
   lv_obj_set_pos(result.percent, 48, 222);
@@ -569,7 +613,9 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
   lv_obj_set_style_bg_opa(result.progress, LV_OPA_COVER, LV_PART_INDICATOR);
   lv_obj_set_style_border_width(result.progress, 0, LV_PART_MAIN);
 
-  if (result.indeterminate_progress) {
+  if (result.indeterminate_progress || (request.job == Job::kPcBackupOperation &&
+      request.backup_source == "computer" &&
+      (request.backup_action == "backup" || request.backup_action == "restore"))) {
     result.progress_pulse = lv_obj_create(card);
     Clear(result.progress_pulse);
     lv_obj_set_pos(result.progress_pulse, 48, 314);
@@ -581,19 +627,12 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
     lv_obj_set_style_shadow_width(result.progress_pulse, 18, 0);
     lv_obj_set_style_shadow_opa(result.progress_pulse, LV_OPA_40, 0);
     lv_obj_remove_flag(result.progress_pulse, LV_OBJ_FLAG_CLICKABLE);
-    lv_anim_t pulse;
-    lv_anim_init(&pulse);
-    lv_anim_set_var(&pulse, result.progress_pulse);
-    lv_anim_set_values(&pulse, 48, 1024);
-    lv_anim_set_duration(&pulse, 1100);
-    lv_anim_set_playback_duration(&pulse, 1100);
-    lv_anim_set_repeat_count(&pulse, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_path_cb(&pulse, lv_anim_path_ease_in_out);
-    lv_anim_set_exec_cb(&pulse, SetIndeterminateProgressX);
-    lv_anim_start(&pulse);
+    if (result.indeterminate_progress) StartIndeterminateProgress(result.progress_pulse);
+    else lv_obj_add_flag(result.progress_pulse, LV_OBJ_FLAG_HIDDEN);
   }
 
   auto *stats = lv_obj_create(card);
+  result.metrics_panel = stats;
   Panel(stats, 26, kMainPanel);
   lv_obj_set_pos(stats, 48, 390);
   lv_obj_set_size(stats, 1216, 180);
@@ -611,6 +650,12 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
 
   const bool network = request.job == Job::kUploadBackup ||
       request.path.find("/mnt/nas") != std::string::npos;
+  if (request.job == Job::kPcBackupOperation && request.backup_source == "computer" &&
+      (request.backup_action == "backup" || request.backup_action == "restore")) {
+    result.transfer_speed = Label(card, "0.0 MB/s", &lv_font_montserrat_32, kAccent);
+    lv_obj_set_pos(result.transfer_speed, 48, 600);
+    lv_obj_set_width(result.transfer_speed, 1216);
+  }
   const std::string destination = request.job == Job::kClearSnapshotCow
       ? "Target  /  Super metadata"
       : request.job == Job::kSideload
@@ -627,6 +672,7 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
       ? (landscape ? 850 : 1230)
       : (landscape ? 850 : result.payload_parallel ? 1120 : 600);
   auto *activity_card = lv_obj_create(screen);
+  result.activity_panel = activity_card;
   Panel(activity_card, 40, kMainSheet);
   lv_obj_set_pos(activity_card, landscape ? 1560 : 64, activity_y);
   lv_obj_set_size(activity_card, landscape ? 1544 : 1312,
@@ -652,6 +698,10 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
   lv_obj_set_pos(result.activity_summary, 48, installer ? 100 : 112);
   lv_obj_set_size(result.activity_summary, landscape ? 1448 : 1216,
                   activity_text_height);
+  if (result.pc_app_backup) {
+    lv_obj_set_height(result.activity_summary, activity_height - 160);
+    lv_label_set_long_mode(result.activity_summary, LV_LABEL_LONG_DOT);
+  }
   if (installer) {
     const int line_space = landscape ? 0 : 2;
     const int line_height =
@@ -783,11 +833,13 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
   lv_obj_set_style_text_align(result.done_label, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_add_flag(result.done, LV_OBJ_FLAG_HIDDEN);
 
-  if (request.job == Job::kSideload) {
+  if (request.job == Job::kSideload || (request.job == Job::kPcBackupOperation &&
+      (request.backup_action == "backup" || request.backup_action == "restore"))) {
     result.cancel = Button(
-        screen, "Cancel sideload",
-        [callback, context] {
-          callback(Action::kCancelSideload, context);
+        screen, request.job == Job::kSideload ? "Cancel sideload" :
+            request.backup_action == "restore" ? "Cancel restore" : "Cancel backup",
+        [callback, context, job = request.job] {
+          callback(job == Job::kSideload ? Action::kCancelSideload : Action::kCancelPcBackup, context);
         });
     lv_obj_set_size(result.cancel, landscape ? 1100 : 1280,
                     landscape ? 116 : 150);
@@ -796,6 +848,7 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
   }
 
   if (installer) BuildInstallerPrompt(&result, screen, landscape);
+  ReflowOperationHeader(result);
 
   AnimateEnter(card, 45, 24);
   AnimateEnter(activity_card, 85, 24);
@@ -812,6 +865,8 @@ OperationScene BuildOperationScene(lv_obj_t *screen, const char *path,
 }
 
 void RefreshOperationScene(const OperationScene &scene) {
+  const auto statistics = scene.transfer_speed ? aera::pc::GetBackupTransferStatistics()
+                                               : aera::pc::BackupTransferStatistics{};
   const bool sideload = scene.job == Job::kSideload;
   const auto sideload_status = sideload ? RecoverySideloadStatus()
                                        : SideloadStatus{};
@@ -820,17 +875,18 @@ void RefreshOperationScene(const OperationScene &scene) {
             sideload_status.received_bytes * 100ULL /
             sideload_status.total_bytes), 0, 100)
       : RecoveryProgress();
-  const bool indeterminate = scene.indeterminate_progress &&
-      (sideload ? sideload_status.total_bytes == 0 : progress <= 0);
+  const bool indeterminate = statistics.finalizing || (scene.indeterminate_progress &&
+      (sideload ? sideload_status.total_bytes == 0 : progress <= 0));
   lv_bar_set_value(scene.progress, indeterminate ? 0 : progress, LV_ANIM_ON);
   i18n::BindLabel(scene.percent, indeterminate
-      ? (sideload ? "Waiting" : "Installing")
+      ? (statistics.finalizing ? "Working..." : sideload ? "Waiting" : "Installing")
       : (std::to_string(progress) + "%").c_str());
   if (scene.progress_pulse && indeterminate) {
+    if (lv_obj_has_flag(scene.progress_pulse, LV_OBJ_FLAG_HIDDEN))
+      StartIndeterminateProgress(scene.progress_pulse);
     lv_obj_remove_flag(scene.progress_pulse, LV_OBJ_FLAG_HIDDEN);
   } else if (scene.progress_pulse) {
-    if (scene.indeterminate_progress)
-      lv_anim_delete(scene.progress_pulse, SetIndeterminateProgressX);
+    lv_anim_delete(scene.progress_pulse, SetIndeterminateProgressX);
     lv_obj_add_flag(scene.progress_pulse, LV_OBJ_FLAG_HIDDEN);
   }
 
@@ -839,7 +895,25 @@ void RefreshOperationScene(const OperationScene &scene) {
       i18n::Format("%u:%02u elapsed", seconds / 60, seconds % 60);
   i18n::BindLabel(scene.elapsed, elapsed.c_str());
 
-  auto friendly = Explain(RecoveryOperationDetail(), scene.job, progress);
+  const auto raw = RecoveryOperationDetail();
+  const auto explained_job = scene.job == Job::kPcBackupOperation
+      ? (scene.pc_restore ? Job::kRestore : Job::kBackup) : scene.job;
+  auto friendly = Explain(raw, explained_job, progress);
+  if (scene.job == Job::kPcBackupOperation && scene.cancel) {
+    const auto cancellation = aera::pc::GetBackupCancellation();
+    if (cancellation.requested) lv_obj_add_state(scene.cancel, LV_STATE_DISABLED);
+  }
+  if (scene.pc_app_backup) {
+    const auto lines = Lines(raw);
+    friendly.title = lines.empty() ? (scene.pc_restore ? "Preparing to restore" : "Preparing your backup") : lines[0];
+    if (friendly.title == "App Backup Vault")
+      friendly.title = scene.pc_restore ? "Preparing to restore" : "Preparing your backup";
+    if (friendly.title == "Restoring apps")
+      friendly.title = i18n::Format("Restoring %s", i18n::Translate("Apps"));
+    friendly.amount = lines.size() > 1 ? lines[1] : "";
+    friendly.files = lines.size() > 2 ? std::string(i18n::Translate("Files")) + ": " + lines[2] : "";
+    friendly.activity = lines.size() > 3 ? lines[3] : friendly.explanation;
+  }
   if (scene.payload_parallel) {
     const auto state = RecoveryPayloadFlashProgress();
     size_t active = 0, verified = 0, queued = 0, failed = 0;
@@ -1007,11 +1081,23 @@ void RefreshOperationScene(const OperationScene &scene) {
       friendly.activity = "Waiting for installer output...";
     }
   }
+  if (statistics.finalizing) {
+    friendly.title = "Saving file on computer";
+    friendly.explanation = "Keep the browser open while the computer finishes saving.";
+  }
+  if (scene.job == Job::kPcBackupOperation && aera::pc::GetBackupCancellation().requested)
+    friendly.title = "Cancelling...";
   i18n::BindLabel(scene.status, friendly.title.c_str());
   i18n::BindLabel(scene.detail, friendly.explanation.c_str());
+  ReflowOperationHeader(scene);
   i18n::BindLabel(scene.metrics,
       friendly.amount.empty() ? "Working..." : friendly.amount.c_str());
   i18n::BindLabel(scene.files, friendly.files.c_str());
+  if (scene.transfer_speed) {
+    char rate[64];
+    snprintf(rate, sizeof(rate), "%.1f MB/s", statistics.bytes_per_second / 1000000.0);
+    i18n::BindLabel(scene.transfer_speed, rate);
+  }
   if (scene.activity_summary &&
       !lv_obj_has_flag(scene.activity_summary, LV_OBJ_FLAG_HIDDEN))
     i18n::BindLabel(scene.activity_summary, friendly.activity.c_str());
@@ -1068,6 +1154,7 @@ void CompleteOperationScene(const OperationScene &scene, bool success,
     i18n::BindLabel(scene.percent, "100%");
   }
   const auto result_color = success ? design::kGreen : design::kRed;
+  if (scene.transfer_speed) lv_obj_add_flag(scene.transfer_speed, LV_OBJ_FLAG_HIDDEN);
   if (scene.job != Job::kInstall && scene.job != Job::kSideload) {
     lv_obj_set_style_bg_color(scene.activity,
         success ? design::kGreenSoft : design::kRedSoft, 0);
@@ -1084,6 +1171,7 @@ void CompleteOperationScene(const OperationScene &scene, bool success,
     lv_obj_add_flag(scene.progress_pulse, LV_OBJ_FLAG_HIDDEN);
   }
   i18n::BindLabel(scene.status,
+      scene.job == Job::kPcBackupOperation && aera::pc::GetBackupCancellation().requested ? "Operation cancelled" :
       sideload_cancelled ? "Sideload cancelled" :
       success ? "Operation complete" : "Operation stopped");
   lv_obj_set_style_text_color(scene.status, result_color, 0);
@@ -1130,6 +1218,7 @@ void CompleteOperationScene(const OperationScene &scene, bool success,
   if (scene.cancel)
     lv_obj_add_flag(scene.cancel, LV_OBJ_FLAG_HIDDEN);
   lv_obj_remove_flag(scene.done, LV_OBJ_FLAG_HIDDEN);
+  ReflowOperationHeader(scene);
 }
 
 }  // namespace aeraui

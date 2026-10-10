@@ -72,6 +72,7 @@ enum class Action {
     kDownloadUpdate,
     kAbout,
     kPcConnection,
+    kCancelPcBackup,
 };
 
 enum class DecryptionCompletion {

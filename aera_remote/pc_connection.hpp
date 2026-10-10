@@ -3,6 +3,7 @@
 
 #include <string>
 #include <aeraui/backend.hpp>
+namespace Json { class Value; }
 
 namespace aeraui::root { struct Progress; }
 
@@ -31,6 +32,13 @@ struct InstallRequest {
   uint64_t bytes = 0;
   aeraui::JobRequest job;
 };
+struct BackupTransferStatistics {
+  uint64_t bytes = 0;
+  double bytes_per_second = 0;
+  bool finalizing = false;
+  uint64_t waiting_seconds = 0;
+};
+BackupTransferStatistics GetBackupTransferStatistics();
 bool SetEnabled(bool enabled, int port = 443, bool manual = true);
 void RefreshNetwork();
 // AERA Remote takes priority on port 80; the PC workspace remains on HTTPS.
@@ -52,6 +60,13 @@ void UpdateInstall(int percent, const std::string &detail, const std::string &lo
 void CompleteInstall(const std::string &id, int result);
 // Called by the root job worker after its inspection has finished.
 void UpdateRootInspection(const aeraui::root::Progress &progress);
+void UpdateBackupResult(const Json::Value &result);
+struct BackupCancellation {
+  std::string id;
+  bool active = false, restore = false, requested = false;
+};
+BackupCancellation GetBackupCancellation();
+bool CancelBackup(const std::string &id, bool acknowledge_partial_restore);
 void UpdateInstallerPrompt(const aeraui::InstallerPrompt &prompt);
 void UpdateInstallerPresentation(const aeraui::InstallerPresentation &presentation);
 bool TakePromptAnswer(std::string *id, bool *accepted);

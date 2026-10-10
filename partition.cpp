@@ -1639,6 +1639,7 @@ bool TWPartition::Is_File_System_Writable(void) {
 }
 
 bool TWPartition::Mount(bool Display_Error) {
+  if (Current_File_System == "fuse.pc") return Is_Mounted();
 	int exfat_mounted = 0;
 	unsigned int flags = Mount_Flags;
 	string mount_fs = "";
@@ -2965,7 +2966,7 @@ bool TWPartition::Backup_Image(PartitionSettings *part_settings) {
 	string Full_FileName, adb_file_name;
 
 	if (DataManager::GetIntValue(AERA_RUN_SURVIVAL_BACKUP) != 1) {
-	   TWFunc::GUI_Operation_Text(TW_BACKUP_TEXT, Display_Name, gui_parse_text("{@backing}"));
+	   TWFunc::GUI_Operation_Text(TW_BACKUP_TEXT, Backup_Display_Name, gui_parse_text("{@backing}"));
 	    gui_msg(Msg("backing_up=Backing up {1}...")(Backup_Display_Name));
 	}
 	Backup_FileName = Backup_Name + "." + Current_File_System + ".win";
@@ -3103,7 +3104,7 @@ bool TWPartition::Backup_Dump_Image(PartitionSettings *part_settings) {
 	string Full_FileName, Command;
 
 	if (DataManager::GetIntValue(AERA_RUN_SURVIVAL_BACKUP) != 1) {
-	   TWFunc::GUI_Operation_Text(TW_BACKUP_TEXT, Display_Name, gui_parse_text("{@backing}"));
+	   TWFunc::GUI_Operation_Text(TW_BACKUP_TEXT, Backup_Display_Name, gui_parse_text("{@backing}"));
 	   gui_msg(Msg("backing_up=Backing up {1}...")(Backup_Display_Name));
 	}
 
@@ -3283,6 +3284,11 @@ bool TWPartition::Restore_Image(PartitionSettings *part_settings) {
 
 bool TWPartition::Update_Size(bool Display_Error) {
 	bool ret = false, Was_Already_Mounted = false, ro = false;
+	if (Current_File_System == "fuse.pc") {
+		Is_Present = Is_Mounted();
+		Size = Used = Free = Backup_Size = 0;
+		return true;
+	}
 	
 	if (Mount_Point == TW_NAS_MOUNT_POINT || Current_File_System == "fuse.nas") {
 #ifdef OF_ENABLE_WLAN

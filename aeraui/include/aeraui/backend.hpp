@@ -20,7 +20,8 @@ enum class Job {
   kUnmount,
   kFormatData,
   kClearSnapshotCow,
-  kRootOperation
+  kRootOperation,
+  kPcBackupOperation
 };
 struct Volume {
   std::string name;
@@ -51,6 +52,9 @@ struct JobRequest {
   std::string root_action;
   std::string root_provider;
   std::string root_slot;
+  std::string backup_action, backup_kind, backup_source, backup_method;
+  std::string backup_storage, backup_snapshot;
+  int backup_user = 0;
   std::string payload_manifest_hash;
   std::string payload_slot;
   bool payload_arb_acknowledged = false;
@@ -99,6 +103,8 @@ std::vector<PayloadFlashTarget> RecoveryPayloadTargets(const std::vector<std::st
 std::vector<Volume> RecoveryRestoreVolumes(const std::string &folder);
 std::string RecoveryStorage();
 std::string RecoveryBackupRoot();
+void RecoveryEnsurePcStorage();
+int RecoveryRunPcBackup(const JobRequest &request);
 bool RecoveryDeleteBackup(const std::string &folder);
 bool RecoveryBackupCanUpload(const std::string &folder);
 std::string RecoverySlot();
@@ -185,6 +191,8 @@ enum class Preference {
   kRecents,
   kPreserveRecovery,
   kPreserveAbl,
+  kBackupChecksums,
+  kVerifyBackupChecksums,
 };
 bool RecoveryPreference(Preference preference);
 bool RecoverySetPreference(Preference preference, bool enabled);

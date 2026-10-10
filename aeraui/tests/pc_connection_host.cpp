@@ -1,24 +1,87 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "../../aera_remote/pc_connection.hpp"
+#include "../../aera_remote/pc_storage.hpp"
 #include "../features/update/payload_inspector.hpp"
 #include "../features/update/payload_arb.hpp"
 #include "../features/root/root_manager.hpp"
 
 #include <chrono>
+#include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <poll.h>
 #include <sstream>
 #include <thread>
+#include <future>
+
+namespace {
+int SimulateBackup(const aeraui::JobRequest &job) {
+  using namespace aera::pc;
+  if (job.backup_action == "backup") {
+    const std::string root = job.backup_source == "computer" ? storage::kMount : job.backup_storage;
+    assert(job.path == root + (job.backup_kind == "apps" ? "/AERA/AppBackupVault" : ""));
+  }
+  Json::Value result(Json::objectValue);
+  if (job.backup_action == "apps") {
+    Json::Value app; app["package"] = "test.app"; app["name"] = "Test application"; app["system"] = false;
+    app["icon"] = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    result["apps"].append(app);
+  } else if (job.backup_source == "computer") {
+    auto call = [&](const char *op, const char *path, const std::string &data = "", uint64_t offset = 0,
+                    std::string *read = nullptr) {
+      Json::Value request, reply; request["op"] = op; request["path"] = path;
+      request["offset"] = Json::UInt64(offset); request["size"] = Json::UInt64(data.empty() ? storage::kBlock : data.size());
+      return storage::Channel().Call(request, reply, read, data);
+    };
+    int error = call("stat", "/");
+    if (!error && job.backup_action == "backup") {
+      const std::string folder = "/AERA/BACKUPS/test-device/" + job.name;
+      for (const auto *path : {"/AERA", "/AERA/BACKUPS", "/AERA/BACKUPS/test-device"}) {
+        if (!error) { const int status = call("mkdir", path); if (status != -17) error = status; }
+      }
+      if (!error) error = call("mkdir", folder.c_str());
+      const std::string path = folder + "/data.ext4.win";
+      if (!error) error = call("create", path.c_str());
+      for (int i = 0; i < 8 && !error; ++i) {
+        error = call("write", path.c_str(), std::string(storage::kBlock, static_cast<char>('a' + i)), i * storage::kBlock);
+        UpdateInstall((i + 1) * 100 / 8, "Simulated backup block " + std::to_string(i + 1), "");
+      }
+      if (!error) error = call("close", path.c_str());
+      result["folder"] = folder.substr(1);
+    } else if (!error) {
+      std::string data;
+      error = call("read", "/data.ext4.win", "", 0, &data);
+      if (!error && (data.size() != storage::kBlock || data != std::string(storage::kBlock, 'a'))) error = -5;
+      if (job.backup_action == "inspect") {
+        Json::Value part; part["path"] = "/data"; part["name"] = "Data"; part["bytes"] = Json::UInt64(storage::kBlock * 8);
+        result["partitions"].append(part);
+      }
+    }
+    storage::Channel().Stop();
+    if (error) {
+      result["error"] = "Simulated computer storage failed.\nComputer storage: " + storage::Channel().LastError();
+      UpdateBackupResult(result); return 1;
+    }
+  }
+  result["detail"] = "Simulated backup operation completed.";
+  UpdateBackupResult(result); return 0;
+}
+}
 
 namespace {
 std::string storage;
 bool locked = false;
+bool app_vault_installed = true;
 bool wifi_connected = false;
 std::string wifi_address = "127.0.0.2";
 }
 namespace aeraui {
+void RecoveryEnsurePcStorage() {}
+bool AppVaultInstalled() { return app_vault_installed; }
+std::vector<AndroidUser> RecoveryAndroidUsers() {
+  return {{0, "Owner", 1, !locked}, {10, "Second user", 1, !locked}};
+}
 std::string RecoveryDevice() { return "test-device"; }
 std::string RecoveryVersion() { return "PC connection test"; }
 std::string RecoverySlot() { return "A"; }
@@ -28,6 +91,14 @@ bool RecoveryPreservationSupported() { return true; }
 bool RecoveryAblPreservationSupported() { return true; }
 bool RecoveryPreference(Preference) { return true; }
 SnapshotCowStatus RecoverySnapshotCowStatus() { return {}; }
+PayloadFlashProgress RecoveryPayloadFlashProgress() {
+  return {true, 2, {{"system", 200000000, 100000000, PayloadPhase::Writing},
+                   {"vendor", 100000000, 25000000, PayloadPhase::Verifying},
+                   {"boot", 10000000, 10000000, PayloadPhase::Verified},
+                   {"dtbo", 10000000, 0, PayloadPhase::Queued},
+                   {"recovery", 10000000, 0, PayloadPhase::NotFlashed},
+                   {"test_failure", 10000000, 5000000, PayloadPhase::Failed}}};
+}
 std::vector<PayloadFlashTarget> RecoveryPayloadTargets(const std::vector<std::string> &names) {
   std::vector<PayloadFlashTarget> targets;
   for (const auto &name : names) targets.push_back({name, "/fixture/" + name});
@@ -35,7 +106,8 @@ std::vector<PayloadFlashTarget> RecoveryPayloadTargets(const std::vector<std::st
 }
 std::string RecoveryStorage() { return storage; }
 WifiConnection RecoveryWifiConnection() { return {wifi_connected, "Test network"}; }
-std::vector<Volume> RecoveryVolumes(const std::string &) {
+std::vector<Volume> RecoveryVolumes(const std::string &kind) {
+  if (kind == "backup") return {{"Data", "/data", 2147483648}, {"Boot", "/boot", 67108864}, {"Recovery", "/recovery", 104857600}};
   return {{"USB storage", storage + "/usb"}};
 }
 std::vector<Volume> RecoveryImageVolumes() {
@@ -110,6 +182,7 @@ int main(int argc, char **argv) {
   std::cout << "READY" << std::endl;
   bool run = demo;
   aera::pc::InstallRequest install;
+  std::future<int> backup;
   auto started = std::chrono::steady_clock::now();
   for (;;) {
     pollfd input{0, POLLIN, 0};
@@ -131,6 +204,9 @@ int main(int argc, char **argv) {
       else if (command == "reboot") {
         std::string target;
         if (aera::pc::TakeRebootRequest(&target)) std::cout << "REBOOT " << target << std::endl;
+      }
+      else if (command == "vault-off" || command == "vault-on") {
+        app_vault_installed = command == "vault-on"; aera::pc::RefreshPlatformInfo();
       }
       else if (command == "off") aera::pc::SetEnabled(false, port, false);
       else if (command == "on") {
@@ -169,6 +245,8 @@ int main(int argc, char **argv) {
       else {
         // Deliberately no RecoveryRunJob: this harness never flashes anything.
         started = std::chrono::steady_clock::now();
+        if (install.job.job == aeraui::Job::kPcBackupOperation)
+          backup = std::async(std::launch::async, SimulateBackup, install.job);
         std::cout << "INSTALL " << static_cast<int>(install.job.job) << ' '
                   << install.job.both_slots << ' ' << install.job.path << std::endl;
         std::cout << "VISIBLE " << install.job.show_on_device << std::endl;
@@ -184,7 +262,11 @@ int main(int argc, char **argv) {
         std::cout << "ANSWER " << id << ' ' << accepted << std::endl;
         aera::pc::UpdateInstallerPrompt({});
       }
-      if (ms >= (demo ? 10000 : 3000)) {
+      if (install.job.job == aeraui::Job::kPcBackupOperation) {
+        if (backup.valid() && backup.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+          aera::pc::CompleteInstall(install.id, backup.get()); install = {};
+        }
+      } else if (ms >= (demo ? 10000 : 3000)) {
         if (install.job.root_action == "inspect") {
           aeraui::root::Progress result;
           result.has_inspection = true;

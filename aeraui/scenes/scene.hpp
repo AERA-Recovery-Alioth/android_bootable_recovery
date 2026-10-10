@@ -42,6 +42,9 @@ struct OperationScene {
   lv_obj_t *log = nullptr;
   lv_obj_t *activity = nullptr;
   lv_obj_t *metrics = nullptr;
+  lv_obj_t *metrics_panel = nullptr;
+  lv_obj_t *activity_panel = nullptr;
+  lv_obj_t *transfer_speed = nullptr;
   lv_obj_t *destination = nullptr;
   lv_obj_t *cancel = nullptr;
   lv_obj_t *installer_prompt = nullptr;
@@ -52,6 +55,8 @@ struct OperationScene {
   uint32_t started = 0;
   unsigned installer_lines = 0;
   Job job = Job::kInstall;
+  bool pc_restore = false;
+  bool pc_app_backup = false;
   bool format_data = false;
   bool indeterminate_progress = false;
 };

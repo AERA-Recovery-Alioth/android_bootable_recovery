@@ -2431,15 +2431,13 @@ void BuildPreferences(Tools *state) {
   PreferenceSection(state, "Backup & connection");
   PreferenceToggle(state, LV_SYMBOL_SAVE, "Compress backups by default",
                    "Smaller archives; backup and restore may take longer", Preference::kCompression);
+  PreferenceToggle(state, LV_SYMBOL_OK, "Generate backup checksums",
+                   "Create MD5/SHA-256 files for recovery backups", Preference::kBackupChecksums);
+  PreferenceToggle(state, LV_SYMBOL_OK, "Verify backup checksums",
+                   "Verify existing MD5/SHA-256 files before restoring", Preference::kVerifyBackupChecksums);
   if (RecoverySha256Available())
     PreferenceToggle(state, LV_SYMBOL_OK, "SHA-256 backup checksums",
                      "On: SHA-256 / Off: legacy MD5 checksums", Preference::kSha256);
-  auto *integrity = Label(state->list,
-      "Backup checksums are always generated. Restore verification stays on.",
-      &lv_font_montserrat_24, kMuted);
-  lv_obj_set_width(integrity, LV_PCT(100));
-  lv_obj_set_style_pad_all(integrity, 24, 0);
-  lv_label_set_long_mode(integrity, LV_LABEL_LONG_WRAP);
   auto *mtp = PreferenceEntry(state, LV_SYMBOL_USB, "USB file transfer",
       "MTP makes accessible storage available to your computer.", {}, true);
   auto *mtp_switch = lv_switch_create(mtp);

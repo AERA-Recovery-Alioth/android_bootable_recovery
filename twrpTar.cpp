@@ -121,6 +121,8 @@ void twrpTar::Set_Archive_Type(Archive_Type archive_type) {
 	current_archive_type = archive_type;
 }
 
+#include "aera_remote/backup_cancel.hpp"
+
 int twrpTar::createTarFork(pid_t *tar_fork_pid) {
 	int status = 0;
 	int progress_pipe[2];
@@ -153,6 +155,7 @@ int twrpTar::createTarFork(pid_t *tar_fork_pid) {
 	}
 
 	if (*tar_fork_pid == 0) {
+		if (aera::pc::BackupOperationActive()) setpgid(0, 0);
 		// Child process
 		// Child closes input side of progress pipe
 		signal(SIGUSR2, twrpTar::Signal_Kill);
@@ -435,6 +438,7 @@ int twrpTar::createTarFork(pid_t *tar_fork_pid) {
 		}
 	} else {
 		// Parent side
+		aera::pc::BackupChildCancellation cancellation(*tar_fork_pid);
 		unsigned long long fs, size_backup = 0, files_backup = 0, file_count = 0;
 		int first_data = 0;
 
@@ -486,8 +490,10 @@ int twrpTar::createTarFork(pid_t *tar_fork_pid) {
 			backup_info.SaveValues();
 		}
 #endif //ndef BUILD_TWRPTAR_MAIN
+		cancellation.Stop();
 		if (TWFunc::Wait_For_Child(*tar_fork_pid, &status, "createTarFork()") != 0)
 			return -1;
+		if (aera::pc::BackupCancelRequested()) return -1;
 	}
 	return 0;
 }
@@ -508,6 +514,7 @@ int twrpTar::extractTarFork() {
 	{
 		if (tar_fork_pid == 0) // child process
 		{
+			if (aera::pc::BackupOperationActive()) setpgid(0, 0);
 			close(progress_pipe[0]);
 			progress_pipe_fd = progress_pipe[1];
 			if (TWFunc::Path_Exists(tarfn) || part_settings->adbbackup) {
@@ -638,6 +645,7 @@ int twrpTar::extractTarFork() {
 		}
 		else // parent process
 		{
+			aera::pc::BackupChildCancellation cancellation(tar_fork_pid);
 			unsigned long long fs, size_backup = 0;
 
 			// Parent closes output side
@@ -651,8 +659,10 @@ int twrpTar::extractTarFork() {
 			close(progress_pipe[0]);
 			part_settings->progress->UpdateDisplayDetails(true);
 
+			cancellation.Stop();
 			if (TWFunc::Wait_For_Child(tar_fork_pid, &status, "extractTarFork()") != 0)
 				return -1;
+			if (aera::pc::BackupCancelRequested()) return -1;
 		}
 	}
 	else // fork has failed
