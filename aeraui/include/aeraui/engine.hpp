@@ -139,6 +139,10 @@ class Engine final {
 
     // Feed already-normalized minui touch coordinates into LVGL.
     void SetPointer(const PointerEvent& event);
+    void SetMouseConnected(bool connected);
+    void MouseMove(int dx, int dy);
+    void MouseButton(bool pressed);
+    void MouseWheel(int steps);
 
     // Hardware-key surfaces managed by the recovery event loop.
     void SetSuspended(bool suspended);

@@ -271,6 +271,20 @@ void AdjustVolume(Engine& engine, InteractionBoost& performance,
 
 bool HandleEvent(Engine& engine, InteractionBoost& performance,
                  HardwareState& hardware, const input_event& event) {
+    if (event.type == EV_REL ||
+        (event.type == EV_KEY && event.code >= BTN_MOUSE && event.code < BTN_JOYSTICK)) {
+        if (hardware.screen_off) return false;
+        performance.Boost();
+        aeraScreenTimer.Wake();
+        if (event.type == EV_REL) {
+            if (event.code == REL_X) engine.MouseMove(event.value, 0);
+            if (event.code == REL_Y) engine.MouseMove(0, event.value);
+            if (event.code == REL_WHEEL) engine.MouseWheel(event.value);
+        } else if (event.code == BTN_LEFT) {
+            engine.MouseButton(event.value != 0);
+        }
+        return false;
+    }
     if (event.type == EV_ABS) {
         if (hardware.screen_off) return false;
         performance.Boost();
@@ -496,6 +510,7 @@ RunResult RunLoop(bool fastboot_mode = false,
             aeraScreenTimer.Wake();
             hardware.screen_off = false;
         }
+        engine.SetMouseConnected(ev_has_mouse() != 0);
         const int wait_ms = static_cast<int>(engine.RunFrame());
         // The display backend may still own/import the current GPU buffer
         // while an input event is being dispatched. Capture only here, after

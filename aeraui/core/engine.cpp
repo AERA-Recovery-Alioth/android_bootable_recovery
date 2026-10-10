@@ -7,6 +7,8 @@
 #include "aeraui/display_transform.hpp"
 #include "aeraui/i18n.hpp"
 #include "operation_affinity.hpp"
+#include "mouse_cursor.hpp"
+#include "src/misc/cache/instance/lv_image_cache.h"
 
 #include <algorithm>
 #include <array>
@@ -335,6 +337,17 @@ public:
      * averaging in lv_indev prevents the old slingshot acceleration. */
     lv_indev_set_scroll_throw(pointer_device_, 4);
 
+    mouse_device_ = lv_indev_create();
+    if (!mouse_device_) { Shutdown(); return false; }
+    lv_indev_set_type(mouse_device_, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_user_data(mouse_device_, this);
+    lv_indev_set_read_cb(mouse_device_, ReadMouse);
+    mouse_x_ = width_ / 2; mouse_y_ = height_ / 2;
+    mouse_cursor_ = lv_image_create(lv_layer_sys());
+    lv_obj_remove_flag(mouse_cursor_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(mouse_cursor_, LV_OBJ_FLAG_HIDDEN);
+    lv_indev_set_cursor(mouse_device_, mouse_cursor_);
+
     ApplyStoredAppearance();
     if (fastboot_mode) {
       backend_ready_ = true;
@@ -402,6 +415,12 @@ public:
     if (recents_overlay_ != nullptr) {
       lv_obj_delete(recents_overlay_);
       recents_overlay_ = nullptr;
+    }
+    if (mouse_device_) { lv_indev_delete(mouse_device_); mouse_device_ = nullptr; }
+    if (mouse_cursor_) {
+      lv_image_set_src(mouse_cursor_, nullptr);
+      lv_image_cache_drop(&mouse_image_);
+      lv_obj_delete(mouse_cursor_); mouse_cursor_ = nullptr;
     }
     if (pointer_device_ != nullptr) {
       lv_indev_delete(pointer_device_);
@@ -771,6 +790,48 @@ public:
     }
   }
 
+  void SetMouseConnected(bool connected) {
+    if (!mouse_device_) return;
+    if (!connected && mouse_connected_) {
+      mouse_pressed_ = false;
+      lv_indev_reset(mouse_device_, nullptr); // Disconnect must not click.
+    }
+    mouse_connected_ = connected;
+    if (!connected || suspended_) lv_obj_add_flag(mouse_cursor_, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_flag(mouse_cursor_, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  void MouseMove(int dx, int dy) {
+    if (!mouse_device_ || suspended_) return;
+    const int w = landscape_ ? height_ : width_;
+    const int h = landscape_ ? width_ : height_;
+    mouse_x_ = std::clamp(mouse_x_ + std::clamp(dx, -4096, 4096), 0, w - 1);
+    mouse_y_ = std::clamp(mouse_y_ + std::clamp(dy, -4096, 4096), 0, h - 1);
+  }
+
+  void MouseButton(bool pressed) {
+    if (!mouse_device_ || suspended_) return;
+    mouse_pressed_ = pressed;
+    // Consume every button edge even when press+release arrive in one frame.
+    lv_indev_read(mouse_device_);
+  }
+
+  void MouseWheel(int steps) {
+    if (!mouse_device_ || suspended_ || mouse_pressed_) return;
+    lv_point_t point{mouse_x_, mouse_y_};
+    lv_obj_t *target = lv_indev_search_obj(lv_layer_sys(), &point);
+    if (!target) target = lv_indev_search_obj(lv_layer_top(), &point);
+    if (!target) target = lv_indev_search_obj(lv_screen_active(), &point);
+    for (; target; target = lv_obj_get_parent(target)) {
+      if (lv_obj_has_flag(target, LV_OBJ_FLAG_SCROLLABLE) &&
+          (lv_obj_get_scroll_dir(target) & LV_DIR_VER) &&
+          (lv_obj_get_scroll_top(target) > 0 || lv_obj_get_scroll_bottom(target) > 0)) {
+        lv_obj_scroll_by(target, 0, std::clamp(steps, -8, 8) * 96, LV_ANIM_OFF);
+        return;
+      }
+    }
+  }
+
   void SetPointer(const PointerEvent &event) {
     const int32_t logical_x = transform_.ToLogicalX(event.x);
     const int32_t logical_y = transform_.ToLogicalY(event.y);
@@ -990,6 +1051,10 @@ public:
 
   void SetSuspended(bool suspended) {
     suspended_ = suspended;
+    SetMouseConnected(mouse_connected_);
+    if (suspended_ && mouse_device_) {
+      mouse_pressed_ = false; lv_indev_reset(mouse_device_, nullptr);
+    }
     if (!suspended_) return;
     CancelEdgeSwipe();
     CancelRecentsSwipe();
@@ -3552,6 +3617,35 @@ private:
     submitted_frames_ = 1;
   }
 
+  static void ReadMouse(lv_indev_t *input, lv_indev_data_t *data) {
+    auto *self = static_cast<Impl *>(lv_indev_get_user_data(input));
+    const int w = self->landscape_ ? self->height_ : self->width_;
+    const int h = self->landscape_ ? self->width_ : self->height_;
+    self->mouse_x_ = std::clamp(self->mouse_x_, 0, w - 1);
+    self->mouse_y_ = std::clamp(self->mouse_y_, 0, h - 1);
+    data->point = self->landscape_
+        ? lv_point_t{self->mouse_y_, self->height_ - self->mouse_x_ - 1}
+        : lv_point_t{self->mouse_x_, self->mouse_y_};
+    data->state = self->mouse_connected_ && !self->suspended_ && self->mouse_pressed_
+        ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    const uint32_t accent = lv_color_to_u32(design::kAccent) & 0xffffff;
+    if (!self->mouse_image_.data || self->mouse_accent_ != accent) {
+      self->mouse_accent_ = accent;
+      self->mouse_pixels_ = mouse_cursor::Render(accent);
+      auto &im = self->mouse_image_;
+      im.header.magic = LV_IMAGE_HEADER_MAGIC;
+      im.header.cf = LV_COLOR_FORMAT_ARGB8888;
+      im.header.flags = LV_IMAGE_FLAGS_MODIFIABLE;
+      im.header.w = mouse_cursor::kWidth; im.header.h = mouse_cursor::kHeight;
+      im.header.stride = mouse_cursor::kWidth * 4;
+      im.data_size = sizeof(self->mouse_pixels_);
+      im.data = reinterpret_cast<const uint8_t *>(self->mouse_pixels_.data());
+      lv_image_cache_drop(&im);
+      lv_image_set_src(self->mouse_cursor_, &im);
+      lv_obj_invalidate(self->mouse_cursor_);
+    }
+  }
+
   static void ReadPointer(lv_indev_t *input, lv_indev_data_t *data) {
     auto *self = static_cast<Impl *>(lv_indev_get_user_data(input));
     if (self == nullptr)
@@ -3591,6 +3685,13 @@ private:
   GpuRenderer gpu_renderer_{};
   lv_display_t *display_ = nullptr;
   lv_indev_t *pointer_device_ = nullptr;
+  lv_indev_t *mouse_device_ = nullptr;
+  lv_obj_t *mouse_cursor_ = nullptr;
+  lv_image_dsc_t mouse_image_{};
+  std::array<uint32_t, mouse_cursor::kWidth * mouse_cursor::kHeight> mouse_pixels_{};
+  uint32_t mouse_accent_ = 0;
+  int mouse_x_ = 0, mouse_y_ = 0;
+  bool mouse_pressed_ = false, mouse_connected_ = false;
   lv_obj_t *gesture_indicator_ = nullptr;
   lv_obj_t *recents_overlay_ = nullptr;
   lv_obj_t *recents_drag_layer_ = nullptr;
@@ -3762,6 +3863,10 @@ DecryptionCompletion Engine::TakeDecryptionCompletion() {
   return impl_->TakeDecryptionCompletion();
 }
 void Engine::SetPointer(const PointerEvent &event) { impl_->SetPointer(event); }
+void Engine::SetMouseConnected(bool connected) { impl_->SetMouseConnected(connected); }
+void Engine::MouseMove(int dx, int dy) { impl_->MouseMove(dx, dy); }
+void Engine::MouseButton(bool pressed) { impl_->MouseButton(pressed); }
+void Engine::MouseWheel(int steps) { impl_->MouseWheel(steps); }
 void Engine::SetSuspended(bool suspended) { impl_->SetSuspended(suspended); }
 void Engine::ShowLockScreen() { impl_->ShowLockScreen(); }
 void Engine::ShowPowerMenu() { impl_->ShowPowerMenu(); }

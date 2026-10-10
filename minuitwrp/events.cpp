@@ -125,6 +125,7 @@ struct ev {
     char deviceName[64];
 
     int ignored;
+    bool mouse;
 
     struct position p, mt_p;
     struct position mt_slots[2];
@@ -569,28 +570,27 @@ static int vk_init(struct ev *e)
 
 // Check for EV_REL (REL_X and REL_Y) and, because touchscreens can have those too,
 // check also for EV_KEY (BTN_LEFT and BTN_RIGHT)
-static void check_mouse(int fd, const char* deviceName)
+static bool check_mouse(int fd, const char* deviceName)
 {
-	if(has_mouse)
-		return;
 
 	unsigned long bit[EV_MAX][NBITS(KEY_MAX)];
 	memset(bit, 0, sizeof(bit));
 	ioctl(fd, EVIOCGBIT(0, EV_MAX), bit[0]);
 
 	if(!test_bit(EV_REL, bit[0]) || !test_bit(EV_KEY, bit[0]))
-		return;
+		return false;
 
 	ioctl(fd, EVIOCGBIT(EV_REL, KEY_MAX), bit[EV_REL]);
 	if(!test_bit(REL_X, bit[EV_REL]) || !test_bit(REL_Y, bit[EV_REL]))
-		return;
+		return false;
 
 	ioctl(fd, EVIOCGBIT(EV_KEY, KEY_MAX), bit[EV_KEY]);
-	if(!test_bit(BTN_LEFT, bit[EV_KEY]) || !test_bit(BTN_RIGHT, bit[EV_KEY]))
-		return;
+	if(!test_bit(BTN_LEFT, bit[EV_KEY]))
+		return false;
 
 	LOGI("Found mouse '%s'\n", deviceName);
 	has_mouse = 1;
+	return true;
 }
 
 int ev_has_mouse(void)
@@ -623,7 +623,7 @@ int ev_init(void)
             /* Load virtualkeys if there are any */
             vk_init(&evs[ev_count]);
 
-            if (!evs[ev_count].ignored)
+            evs[ev_count].mouse = !evs[ev_count].ignored &&
                 check_mouse(fd, evs[ev_count].deviceName);
 
             ev_count++;
@@ -713,6 +713,12 @@ static int vk_modify(struct ev *e, struct input_event *ev)
 
     // This is used to ditch useless event handlers, like an accelerometer
     if (e->ignored)     return 1;
+    // Mouse SYN packets must never enter touchscreen contact synthesis.
+    if (e->mouse) {
+        return !((ev->type == EV_REL &&
+                  (ev->code == REL_X || ev->code == REL_Y || ev->code == REL_WHEEL)) ||
+                 (ev->type == EV_KEY && ev->code >= BTN_MOUSE && ev->code < BTN_JOYSTICK));
+    }
 
     if (ev->type == EV_REL && ev->code == REL_Z)
     {
@@ -1117,7 +1123,7 @@ int ev_get(struct input_event *ev, int timeout_ms)
     {
         struct stat st;
         stat("/dev/input", &st);
-        if (st.st_mtime > lastInputMTime)
+        if (st.st_mtime != lastInputMTime)
         {
             LOGI("Reloading input devices\n");
             ev_exit();
