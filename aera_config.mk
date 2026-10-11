@@ -23,7 +23,6 @@ $(eval $(call aera-map-config,DISABLE_ORS_AUTO_REBOOT,OF_DISABLE_ORS_AUTO_REBOOT
 $(eval $(call aera-map-config,DISPLAY_FORMAT_FILESYSTEMS_DEBUG_INFO,OF_DISPLAY_FORMAT_FILESYSTEMS_DEBUG_INFO))
 $(eval $(call aera-map-config,DYNAMIC_FULL_SIZE,OF_DYNAMIC_FULL_SIZE))
 $(eval $(call aera-map-config,ENABLE_ALL_PARTITION_TOOLS,OF_ENABLE_ALL_PARTITION_TOOLS))
-$(eval $(call aera-map-config,ENABLE_FRP_ADDON,OF_ENABLE_FRP_ADDON))
 ifneq ($(origin AERA_ENABLE_FS_COMPRESSION),undefined)
   ifneq ($(filter 1 true,$(AERA_ENABLE_FS_COMPRESSION)),)
     TW_ENABLE_FS_COMPRESSION := true

@@ -849,9 +849,9 @@ ifeq ($(OF_DISABLE_ORS_AUTO_REBOOT),1)
     LOCAL_CFLAGS += -DOF_DISABLE_ORS_AUTO_REBOOT
 endif
 
-# enable the FRP deletion addon?
-ifeq ($(OF_ENABLE_FRP_ADDON),1)
-    LOCAL_CFLAGS += -DOF_ENABLE_FRP_ADDON
+# Opt-in raw FRP wipe in the partition wipe list (no legacy add-on).
+ifeq ($(AERA_ENABLE_FRP_WIPE),1)
+    LOCAL_CFLAGS += -DAERA_ENABLE_FRP_WIPE=1
 endif
 
 ifeq ($(TW_INCLUDE_OMAPI),true)

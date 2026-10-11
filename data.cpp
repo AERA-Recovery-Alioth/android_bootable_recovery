@@ -754,12 +754,6 @@ void DataManager::SetDefaultValues()
   mConst.SetValue(AERA_RELEASE_CHANNEL_STR, AERA_BUILD_TYPE);
   mConst.SetValue("fox_branch", AERA_BRANCH);
 
-#ifdef OF_ENABLE_FRP_ADDON
-  if (TWFunc::Path_Exists("/dev/block/bootdevice/by-name/frp") || TWFunc::Fox_Property_Get("ro.frp.pst") != "") {
-	mConst.SetValue("enable_frp_addon", "1");
-  }
-#endif
-
 #ifdef AERA_MOVE_MAGISK_INSTALLER_TO_RAMDISK
   mConst.SetValue("aera_magisk_path", Aera_Ramdisk_Files + "/OF_Magisk");
 #else

@@ -21,6 +21,7 @@
 
 #include <stdio.h>
 #include "aera_image_flash_batch.hpp"
+#include "aera_frp_wipe.hpp"
 #include "aera_remote/backup_cancel.hpp"
 #include "aera_image_flash_mounts.hpp"
 #include <stdlib.h>
@@ -2185,6 +2186,20 @@ unsigned long long TWPartitionManager::Get_Restore_Size(
 }
 
 int TWPartitionManager::Wipe_By_Path(string Path) {
+	// FRP is never a filesystem wipe and is opt-in at build time.
+	if (TWFunc::Get_Root_Path(Path) == "/frp") {
+		aera_frp::Target target;
+		if (Path != "/frp" ||
+		    !aera_frp::Discover(android::base::GetProperty("ro.frp.pst", ""), &target)) {
+			LOGERR("FRP wipe is disabled or no valid FRP partition is available.\n");
+			return false;
+		}
+		gui_print("Erasing FRP partition...\n");
+		const bool ok = aera_frp::Wipe(target);
+		if (!ok) LOGERR("FRP erase/verification failed.\n");
+		else gui_print("FRP erase complete.\n");
+		return ok;
+	}
 	std::vector<TWPartition*>::iterator iter;
 	std::vector < TWPartition * >::iterator iter1;
 	int ret = false;
@@ -2231,6 +2246,10 @@ int TWPartitionManager::Wipe_By_Path(string Path) {
 }
 
 int TWPartitionManager::Wipe_By_Path(string Path, string New_File_System) {
+	if (TWFunc::Get_Root_Path(Path) == "/frp") {
+		LOGERR("FRP does not support filesystem formatting.\n");
+		return false;
+	}
 	std::vector<TWPartition*>::iterator iter;
 	int ret = false;
 	bool found = false;
@@ -3409,12 +3428,23 @@ void TWPartitionManager::Get_Partition_List(string ListType,
 			}
 		}
 	} else if (ListType == "wipe") {
+		aera_frp::Target frp;
+		if (aera_frp::Discover(android::base::GetProperty("ro.frp.pst", ""), &frp)) {
+			PartitionList part{};
+			part.Display_Name = "FRP";
+			part.Mount_Point = "/frp";
+			part.PartitionSize = frp.bytes;
+			part.selected = 0;
+			Partition_List->push_back(part);
+		}
 		struct PartitionList dalvik;
 		dalvik.Display_Name = gui_parse_text("{@dalvik}");
 		dalvik.Mount_Point = "DALVIK";
 		dalvik.selected = 0;
 		Partition_List->push_back(dalvik);
 		for (iter = Partitions.begin(); iter != Partitions.end(); iter++) {
+			// Handle FRP only through the gated raw-partition entry above.
+			if ((*iter)->Mount_Point == "/frp") continue;
 			if ((*iter)->Wipe_Available_in_GUI && !(*iter)->Is_SubPartition) {
 				struct PartitionList part;
 				part.Display_Name = (*iter)->Display_Name;

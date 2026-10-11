@@ -486,6 +486,7 @@ std::string WipeDescription(const std::string &path) {
   if (path == "INTERNAL") return "Deletes photos, downloads and files";
   if (path == "/data") return "Erase apps and settings on the data partition";
   if (path == "/metadata") return "Encryption metadata; may make data inaccessible";
+  if (path == "/frp") return "Erase Factory Reset Protection data and any OEM-unlock state stored here";
   return i18n::Format("Erase %s", path.c_str());
 }
 
@@ -562,7 +563,7 @@ void PartitionRows(Tools *state) {
       lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
       const auto detail = wipe ? WipeDescription(v.path) : v.path;
       auto *path = Label(row, detail.c_str(), &lv_font_montserrat_32,
-          wipe && (v.path == "/metadata" || v.path == "INTERNAL") ? kAmber : kMuted);
+          wipe && (v.path == "/metadata" || v.path == "INTERNAL" || v.path == "/frp") ? kAmber : kMuted);
       lv_obj_set_pos(path, 112, 76);
       lv_obj_set_width(path, wipe ? row_width - 150 : row_width - 430);
       lv_label_set_long_mode(path, LV_LABEL_LONG_DOT);
