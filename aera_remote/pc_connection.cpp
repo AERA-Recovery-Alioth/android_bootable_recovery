@@ -774,7 +774,13 @@ const char *ConfigureImageTarget(const Json::Value &body, aeraui::JobRequest *re
 }
 void FileCommand(SSL *tls, const std::string &command, const Json::Value &body, const std::string &owner) {
   FileAccess access;
-  if (!access.acquired) { Error(tls, 409, "Finish the current operation or discard its transfer first."); return; }
+  if (!access.acquired) {
+    std::lock_guard<std::mutex> guard(g_lock);
+    Error(tls, 409, TerminalPhase(g_transfer.phase) ?
+        "Recovery is busy. Please try again shortly." :
+        "Finish the current operation or discard its transfer first.");
+    return;
+  }
   std::string path, root;
   if (!body["path"].isString() || !ResolveStoragePath(body["path"].asString(), &path, &root)) {
     Error(tls, 409, "This path is not in an available mounted storage."); return;

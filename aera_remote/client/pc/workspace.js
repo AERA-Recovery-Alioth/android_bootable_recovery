@@ -1,7 +1,8 @@
 'use strict';
 const workspace = {tab: 'install', folder: null, selected: null, loading: false, action: null, slotChosen: false,
-  dismissed: setting('dismissedActivity'), localJob: null, serverJobId: '', download: null};
-const activeJob = () => state.busy || ['prepared','uploading','ready','queued','installing'].includes(state.job?.phase);
+  dismissed: setting('dismissedActivity'), localJob: null, serverJobId: '', download: null,
+  selection: new Map(), entries: new Map(), selectionAnchor: '', batchDownload: false, pendingFolder: null};
+const activeJob = () => state.busy || workspace.batchDownload || ['prepared','uploading','ready','queued','installing'].includes(state.job?.phase);
 const icon = name => {
   const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
   const use = document.createElementNS(svg.namespaceURI,'use');
@@ -96,17 +97,25 @@ controls = function() {
   $('fileUploadCancel').lastChild.textContent=workspace.download?' Cancel download':' Cancel upload';
   const imageTarget=state.info?.partitions.find(partition=>partition.path===$('partition').value);
   if(imageTarget&&!imageTarget.slot_select){$('slots').disabled=true;$('slots').value='current';}
-  const blocked = !state.connected || activeJob() || !!state.info?.busy;
+  const blocked = !state.connected || activeJob() || workspace.batchDownload || !!state.info?.busy;
   for (const id of ['rootInspect','rootRefresh','rootPatch','rootRollback','rootManager'])
     $(id).disabled = blocked || !state.info?.root_available || !!state.info?.locked || !$('rootSlot').value;
   for (const button of document.querySelectorAll('[data-reboot]')) button.disabled = blocked;
   for (const id of ['fileUpload','folderNew','folderUp','folderRefresh','fileRename','fileDelete','fileDownload','fileInstall'])
     $(id).disabled = blocked || workspace.loading || !workspace.folder || (id.startsWith('file') && id !== 'fileUpload' && !workspace.selected);
   $('fileStorage').disabled = blocked || workspace.loading;
+  const selected=Array.from(workspace.selection.values());
+  $('fileDelete').disabled=blocked||workspace.loading||!selected.length;
+  $('fileDownload').disabled=blocked||workspace.loading||!selected.length||selected.some(entry=>!entry.regular);
+  $('fileSelectAll').disabled=blocked||workspace.loading||!workspace.entries.size;
+  $('fileClearSelection').disabled=blocked||workspace.loading;
+  for(const input of $('fileList').querySelectorAll('input'))input.disabled=blocked||workspace.loading;
+  for(const button of $('fileList').querySelectorAll('button'))button.disabled=blocked||workspace.loading||button.dataset.special==='true';
   if (state.saveFolder) {
     $('imageFields').hidden = true; $('storage').disabled = true;
     $('transfer').disabled = !state.connected || !state.file || activeJob() || !!state.info?.busy;
   } else $('transfer').disabled = $('transfer').disabled || !!state.info?.busy;
+  if(workspace.batchDownload){$('transfer').disabled=true;$('install').disabled=true;}
   if (state.job?.save_path) $('install').textContent = 'Save file';
   renderPackageInfo($('packageInfo'),!state.file||state.job?.name===state.file.name?state.job?.package_info:null);
   const packageInfo=state.job?.package_info;
@@ -153,6 +162,9 @@ updateInfo = function(info) {
   $('certificateState').textContent = info.persistent_certificate ? 'Private device authority / SHA-256 fingerprint' :
     'Temporary authority: writable persistent data is unavailable. Do not permanently trust this session certificate.';
   controls();
+  if(workspace.pendingFolder&&workspace.tab==='files'&&!info.busy&&!activeJob()&&!workspace.loading){
+    const pending=workspace.pendingFolder;workspace.pendingFolder=null;loadFolder(pending.path,pending.append);
+  }
 };
 const originalUpdateJob = updateJob;
 function renderUploadProgress(job) {
@@ -424,37 +436,74 @@ for(const button of document.querySelectorAll('[data-reboot]')) button.onclick=(
     });
 };
 async function loadFolder(path,append=false) {
+  if(activeJob()||state.info?.busy){workspace.pendingFolder={path,append};$('fileCount').textContent='Waiting for recovery';return;}
+  workspace.pendingFolder=null;
   if(workspace.loading)return;workspace.loading=true;controls();
-  if(!append){$('fileList').replaceChildren();const waiting=document.createElement('div');waiting.className='file-empty';waiting.textContent='Loading folder...';$('fileList').append(waiting);workspace.selected=null;$('fileSelection').hidden=true;}
+  if(!append){$('fileList').replaceChildren();const waiting=document.createElement('div');waiting.className='file-empty';waiting.textContent='Loading folder...';$('fileList').append(waiting);workspace.selection.clear();workspace.entries.clear();workspace.selectionAnchor='';updateSelection();}
   try{
     const result=await api('files/list',{path,offset:append?workspace.folder?.next||0:0});
     workspace.folder=result;$('folderPath').textContent=result.path;$('fileCount').textContent=result.total+' entries';
     if(!append)$('fileList').replaceChildren();
     for(const entry of result.entries){
-      const row=document.createElement('button');row.className='file-row';row.disabled=!entry.directory&&!entry.regular;
+      const row=document.createElement('div');row.className='file-row';row.dataset.path=entry.path;
+      const open=document.createElement('button');open.className='entry-open';
+      open.dataset.special=String(!entry.directory&&!entry.regular);open.disabled=!entry.directory&&!entry.regular;
+      if(entry.directory||entry.regular){
+        workspace.entries.set(entry.path,entry);
+        const choice=document.createElement('input');choice.type='checkbox';choice.setAttribute('aria-label','Select '+entry.name);
+        choice.onchange=()=>{if(choice.checked)workspace.selection.set(entry.path,entry);else workspace.selection.delete(entry.path);workspace.selectionAnchor=entry.path;updateSelection()};
+        row.append(choice);
+      }
       const text=document.createElement('div');text.style.minWidth='0';
       const name=document.createElement('div');name.className='entry-name';name.textContent=entry.name;
       const meta=document.createElement('div');meta.className='entry-meta';
       meta.textContent=(entry.directory?'Folder':entry.regular?size(entry.bytes):'Special / link')+' / '+new Date(entry.modified*1000).toLocaleString();
-      text.append(name,meta);row.append(icon(entry.directory?'folder':'file'),text);
-      row.onclick=()=>{if(entry.directory)loadFolder(entry.path);else selectEntry(entry,row)};
-      row.oncontextmenu=event=>{event.preventDefault();selectEntry(entry,row)};
+      text.append(name,meta);open.append(icon(entry.directory?'folder':'file'),text);row.append(open);
+      open.onclick=event=>{if(entry.directory&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey)loadFolder(entry.path);else selectEntry(entry,event)};
+      open.oncontextmenu=event=>{event.preventDefault();if(!open.disabled)selectEntry(entry,{ctrlKey:true})};
       $('fileList').append(row);
     }
     if(!result.total){const empty=document.createElement('div');empty.className='file-empty';empty.textContent='Empty folder';$('fileList').append(empty);}
     $('filesMore').hidden=result.next===null;$('folderUp').disabled=result.path===result.root;
+    $('fileSelectAllLabel').textContent=result.next===null?'Select all':'Select loaded';updateSelection();
     if(result.truncated)notice('This folder has more than 10,000 entries. Only the first scanned entries are listed.','');
   }catch(error){notice(error.message);if(!append)$('fileList').replaceChildren();}
   finally{workspace.loading=false;controls();if(workspace.folder)$('folderUp').disabled=$('folderUp').disabled||workspace.folder.path===workspace.folder.root;}
 }
-function selectEntry(entry,row){
-  workspace.selected=entry;for(const child of $('fileList').children)child.classList.toggle('selected',child===row);
-  $('fileSelection').hidden=false;$('selectedName').textContent=entry.name;
-  $('selectedDetails').textContent=entry.directory?'Empty folders can be deleted.':size(entry.bytes)+' / '+new Date(entry.modified*1000).toLocaleString();
-  $('fileDownload').hidden=entry.directory;
-  $('fileInstall').hidden=!entry.regular||!entry.bytes||!(/\.(zip|img)$/i.test(entry.name));
-  $('fileInstallLabel').textContent=/\.img$/i.test(entry.name)?'Flash image':'Install ZIP';controls();
+function selectEntry(entry,event={}){
+  if(event.shiftKey&&workspace.selectionAnchor){
+    const paths=Array.from(workspace.entries.keys());
+    const from=paths.indexOf(workspace.selectionAnchor),to=paths.indexOf(entry.path);
+    if(from>=0&&to>=0)for(const path of paths.slice(Math.min(from,to),Math.max(from,to)+1))workspace.selection.set(path,workspace.entries.get(path));
+  }else if(event.ctrlKey||event.metaKey){
+    if(workspace.selection.has(entry.path))workspace.selection.delete(entry.path);else workspace.selection.set(entry.path,entry);
+  }else{workspace.selection.clear();workspace.selection.set(entry.path,entry)}
+  workspace.selectionAnchor=entry.path;updateSelection();
 }
+function updateSelection(){
+  const entries=Array.from(workspace.selection.values()),single=entries.length===1?entries[0]:null;
+  workspace.selected=single;
+  for(const row of $('fileList').querySelectorAll('.file-row')){
+    const selected=workspace.selection.has(row.dataset.path);row.classList.toggle('selected',selected);
+    const input=row.querySelector('input');if(input)input.checked=selected;
+  }
+  $('fileSelection').hidden=!entries.length;
+  $('selectedName').textContent=single?single.name:entries.length+' selected';
+  const bytes=entries.reduce((total,entry)=>total+(entry.regular?entry.bytes:0),0);
+  $('selectedDetails').textContent=single?(single.directory?'Only empty folders can be deleted.':size(single.bytes)+' / '+new Date(single.modified*1000).toLocaleString()):size(bytes)+' / '+entries.filter(entry=>entry.directory).length+' folders';
+  $('fileDownload').hidden=entries.some(entry=>!entry.regular);
+  $('fileDownload').lastChild.textContent=entries.length>1?' Download selected':' Download';
+  $('fileRename').hidden=!single;
+  $('fileInstall').hidden=!single?.regular||!single.bytes||!(/\.(zip|img)$/i.test(single.name));
+  $('fileInstallLabel').textContent=/\.img$/i.test(single?.name||'')?'Flash image':'Install ZIP';
+  $('fileSelectedCount').textContent=entries.length?entries.length+' selected':'';
+  $('fileClearSelection').hidden=!entries.length;
+  $('fileSelectAll').checked=!!workspace.entries.size&&entries.length===workspace.entries.size;
+  $('fileSelectAll').indeterminate=!!entries.length&&entries.length<workspace.entries.size;
+  controls();
+}
+$('fileSelectAll').onchange=()=>{workspace.selection.clear();if($('fileSelectAll').checked)for(const [path,entry] of workspace.entries)workspace.selection.set(path,entry);updateSelection()};
+$('fileClearSelection').onclick=()=>{workspace.selection.clear();updateSelection()};
 async function prepareExistingFile(entry,image={}){
   if(!entry||activeJob())return;
   state.busy=true;controls();notice('Reading package information...');
@@ -494,14 +543,30 @@ $('fileStorage').onchange=()=>{workspace.folder=null;loadFolder($('fileStorage')
 $('folderRefresh').onclick=()=>loadFolder(workspace.folder.path);$('folderUp').onclick=()=>loadFolder(workspace.folder.parent);
 $('filesMore').onclick=()=>loadFolder(workspace.folder.path,true);
 $('folderNew').onclick=()=>confirmation('New folder',workspace.folder.path,async name=>{await api('files/mkdir',{path:workspace.folder.path,name,confirm:true});await loadFolder(workspace.folder.path)},'');
-$('fileRename').onclick=()=>{const entry=workspace.selected;confirmation('Rename',entry.name,async name=>{await api('files/rename',{path:entry.path,name,confirm:true});await loadFolder(workspace.folder.path)},entry.name)};
-$('fileDelete').onclick=()=>{const entry=workspace.selected;confirmation('Delete '+(entry.directory?'empty folder?':'file?'),entry.path+'\n\nThis cannot be undone.',async()=>{await api('files/delete',{path:entry.path,confirm:true});await loadFolder(workspace.folder.path)})};
-$('fileDownload').onclick=async()=>{
-  const entry=workspace.selected;if(!entry||state.busy)return;
+$('fileRename').onclick=()=>{const entry=workspace.selected;if(!entry||activeJob())return;confirmation('Rename',entry.name,async name=>{await api('files/rename',{path:entry.path,name,confirm:true});await loadFolder(workspace.folder.path)},entry.name)};
+$('fileDelete').onclick=()=>{
+  const entries=Array.from(workspace.selection.values());if(!entries.length||activeJob())return;
+  const folder=workspace.folder.path;
+  const list=entries.slice(0,10).map(entry=>entry.name).join('\n')+(entries.length>10?'\n+ '+(entries.length-10)+' more':'');
+  confirmation(entries.length===1?'Delete selected item?':'Delete '+entries.length+' selected items?',list+'\n\nThis cannot be undone. Only empty folders can be deleted.',async()=>{
+    state.busy=true;controls();let removed=0;
+    try{for(const entry of entries){await api('files/delete',{path:entry.path,confirm:true});removed++}notice(removed+' items deleted.','success')}
+    catch(error){throw new Error(removed+' / '+entries.length+' deleted. '+error.message)}
+    finally{state.busy=false;await loadFolder(folder);controls()}
+  });
+};
+async function downloadEntry(entry,directory=null,batchAbort=null){
+  if(!entry||state.busy)return false;
+  workspace.downloadError='';
   let writer=null,watchdog=null;
-  const abort=new AbortController();
+  const abort=batchAbort||new AbortController();let complete=false;
   try{
-    if(entry.bytes>64*1024*1024){
+    if(directory){
+      try{await directory.getFileHandle(entry.name);throw new Error(entry.name+' already exists in the chosen computer folder. Nothing was overwritten.')}
+      catch(error){if(error.name!=='NotFoundError')throw error}
+      if(abort.signal.aborted)throw new DOMException('Download cancelled.','AbortError');
+      const handle=await directory.getFileHandle(entry.name,{create:true});writer=await handle.createWritable();
+    }else if(entry.bytes>64*1024*1024){
       if(typeof window.showSaveFilePicker!=='function'){
         confirmation('Download large file?',entry.name+'\n\nThis browser cannot stream into a local file. Import the recovery certificate first, then continue with a normal browser download.',async()=>{
           const result=await api('files/download',{path:entry.path});const link=document.createElement('a');link.href=result.url;link.download=entry.name;link.click();
@@ -543,8 +608,10 @@ $('fileDownload').onclick=async()=>{
       detail:'Downloaded '+entry.name+'.',bytes:entry.bytes,received:entry.bytes,progress:100,
       log:'Downloaded '+entry.name+' to this computer.'};
     updateJob(workspace.localJob);
+    complete=true;
   }catch(error){
     const message=error.name==='AbortError'?'Download interrupted.':error.message;
+    workspace.downloadError=message;
     if(workspace.download){
       state.busy=false;workspace.localJob={id:'download-'+crypto.randomUUID(),phase:'failed',download_name:entry.name,detail:message};
       updateJob(workspace.localJob);
@@ -554,6 +621,23 @@ $('fileDownload').onclick=async()=>{
     clearInterval(watchdog);if(writer)await writer.abort().catch(()=>{});
     workspace.download=null;state.busy=false;controls();activityVisibility();
   }
+  return complete;
+}
+$('fileDownload').onclick=async()=>{
+  const entries=Array.from(workspace.selection.values());if(!entries.length||activeJob())return;
+  if(entries.length===1){await downloadEntry(entries[0]);return}
+  let directory=null;
+  try{if(typeof window.showDirectoryPicker==='function')directory=await window.showDirectoryPicker({id:'aera-files-download',mode:'readwrite'})}
+  catch(error){if(error.name!=='AbortError')notice(error.message);return}
+  const abort=new AbortController();workspace.batchDownload=true;controls();
+  let completed=0;
+  try{
+    for(const entry of entries){
+      if(abort.signal.aborted||!await downloadEntry(entry,directory,abort))break;
+      completed++;
+    }
+    notice(completed+' / '+entries.length+' files downloaded.'+(completed===entries.length?'':' '+(workspace.downloadError||'Transfer stopped.')),completed===entries.length?'success':'');
+  }finally{workspace.batchDownload=false;controls()}
 };
 $('fileUpload').onclick=()=>$('storageFile').click();
 $('fileUploadCancel').onclick=()=>{if(workspace.download)workspace.download.abort();else discard()};
