@@ -1,6 +1,7 @@
 #include "scene.hpp"
 #include "ui_components.hpp"
 #include "pc_transfer_banner.hpp"
+#include "hardware_keyboard.hpp"
 #include "themed_app_art.hpp"
 #include "package_review.hpp"
 #include "update/payload_inspector.hpp"
@@ -538,6 +539,50 @@ int main(int argc,char **argv) {
         banner.Refresh({}); assert(lv_obj_get_child_count(lv_layer_top()) == 0);
       }
     }
+    return 0;
+  }
+  if (!strcmp(argv[1], "--hardware-keyboard")) {
+    hardware_keys::State keys;
+    auto key=[&](unsigned code,int value=1) {
+      assert(keys.Update(code,value));
+      return hardware_keyboard::Handle(code,value,keys);
+    };
+    auto *input=widgets::TextArea(screen);
+    lv_textarea_set_one_line(input,true);
+    lv_textarea_set_text(input,"");
+    lv_obj_send_event(input,LV_EVENT_PRESSED,nullptr);
+    key(KEY_A);key(KEY_A,0);key(KEY_LEFTSHIFT);key(KEY_B);key(KEY_LEFTSHIFT,0);
+    key(KEY_1);key(KEY_1,2);key(KEY_1,0);
+    assert(std::string(lv_textarea_get_text(input))=="aB11");
+    key(KEY_BACKSPACE);key(KEY_HOME);key(KEY_DELETE);
+    assert(std::string(lv_textarea_get_text(input))=="B1");
+    int control=0;
+    text_edit::SetControlHandler(input,[](lv_obj_t *,unsigned k,void *data) {
+      *static_cast<int *>(data)=static_cast<int>(k);
+    },&control);
+    key(KEY_LEFTCTRL);key(KEY_C);key(KEY_C,0);key(KEY_LEFTCTRL,0);
+    assert(control==3 && std::string(lv_textarea_get_text(input))=="B1");
+    int submitted=0,clicked=0;
+    lv_obj_add_event_cb(input,[](lv_event_t *e) {
+      ++*static_cast<int *>(lv_event_get_user_data(e));
+    },LV_EVENT_READY,&submitted);
+    key(KEY_ENTER);key(KEY_ENTER,2);key(KEY_ENTER,0);assert(submitted==1);
+    auto *button=widgets::Button(screen,"Test",[&]{++clicked;});
+    lv_obj_set_y(button,300);
+    key(KEY_TAB);key(KEY_ENTER);key(KEY_ENTER,0);assert(clicked==1);
+    key(KEY_Z);assert(std::string(lv_textarea_get_text(input))=="B1");
+    key(KEY_LEFTSHIFT);key(KEY_TAB);key(KEY_LEFTSHIFT,0);
+    assert(hardware_keyboard::focus==input);
+    lv_obj_delete(input);assert(!hardware_keyboard::focus&&!text_edit::FocusedInput());
+    auto *modal=lv_obj_create(screen);
+    lv_obj_set_user_data(modal,&widgets::kModalMarker);
+    auto *inside=widgets::Button(modal,"Inside",[]{});
+    key(KEY_TAB);assert(hardware_keyboard::focus==inside);
+    key(KEY_TAB);assert(hardware_keyboard::focus==inside);
+    lv_obj_delete(modal);assert(!hardware_keyboard::focus);
+    assert(!key(KEY_ESC));
+    lv_deinit();std::filesystem::remove_all(backup_root);
+    puts("Physical keyboard UI: typing, modifiers, repeat, editing, submit, focus, deletion and modal isolation passed.");
     return 0;
   }
   if (!strcmp(argv[1], "--pc-backup-progress")) {

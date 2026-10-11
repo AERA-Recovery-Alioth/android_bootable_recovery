@@ -143,6 +143,8 @@ class Engine final {
     void MouseMove(int dx, int dy);
     void MouseButton(bool pressed);
     void MouseWheel(int steps);
+    bool KeyboardKey(unsigned code, int value);
+    void ResetKeyboard();
 
     // Hardware-key surfaces managed by the recovery event loop.
     void SetSuspended(bool suspended);

@@ -598,8 +598,12 @@ int ev_has_mouse(void)
 	return has_mouse;
 }
 
+static unsigned input_generation;
+unsigned ev_input_generation(void) { return input_generation; }
+
 int ev_init(void)
 {
+    ++input_generation;
     DIR *dir;
     struct dirent *de;
     int fd;
@@ -717,7 +721,8 @@ static int vk_modify(struct ev *e, struct input_event *ev)
     if (e->mouse) {
         return !((ev->type == EV_REL &&
                   (ev->code == REL_X || ev->code == REL_Y || ev->code == REL_WHEEL)) ||
-                 (ev->type == EV_KEY && ev->code >= BTN_MOUSE && ev->code < BTN_JOYSTICK));
+                 (ev->type == EV_KEY && (ev->code < BTN_MISC ||
+                    (ev->code >= BTN_MOUSE && ev->code < BTN_JOYSTICK))));
     }
 
     if (ev->type == EV_REL && ev->code == REL_Z)

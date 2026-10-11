@@ -303,6 +303,13 @@ bool HandleEvent(Engine& engine, InteractionBoost& performance,
 
     if (event.type != EV_KEY) return false;
 
+    // Ordinary keyboard keys precede the handset Home fallback, so Home/End
+    // edit text instead of navigating away from the active field.
+    if (engine.KeyboardKey(event.code, event.value)) {
+        if (event.value != 0 && !hardware.screen_off) { performance.Boost(); aeraScreenTimer.Wake(); }
+        return false;
+    }
+
     if (event.code == KEY_POWER) {
         if (event.value == 1) {
             hardware.power_down = true;
@@ -616,6 +623,11 @@ RunResult RunLoop(bool fastboot_mode = false,
         // consumed here is naturally coalesced before the next rendered frame.
         constexpr unsigned kInputDrainBudget = 512;
         for (unsigned reads = 0; reads < kInputDrainBudget; ++reads) {
+            static unsigned input_generation = 0;
+            if (input_generation != ev_input_generation()) {
+                input_generation = ev_input_generation();
+                engine.ResetKeyboard();
+            }
             if (result >= 0 &&
                 HandleEvent(engine, performance, hardware, event))
                 return RunResult::kUnexpectedExit;

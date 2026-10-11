@@ -4,6 +4,10 @@
 
 namespace aeraui::text_edit {
 void Attach(lv_obj_t *input);
+lv_obj_t *FocusedInput();
+using ControlHandler = void (*)(lv_obj_t *, unsigned, void *);
+void SetControlHandler(lv_obj_t *input, ControlHandler handler, void *context);
+void SendControl(lv_obj_t *input, unsigned key);
 void SetSelectAllOnHold(lv_obj_t *input, bool enabled);
 void SelectWord(lv_obj_t *input);
 void SelectAll(lv_obj_t *input);

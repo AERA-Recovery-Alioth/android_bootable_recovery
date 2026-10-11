@@ -41,6 +41,7 @@
 #include "root/root_manager.hpp"
 #include "../components/power_transition.hpp"
 #include "../components/phone_keyboard.hpp"
+#include "../components/hardware_keyboard.hpp"
 #include "draw/opengles/lv_draw_opengles.h"
 #include "../../aera_rpc/aera_channel.hpp"
 #include "../../aera_remote/aera_remote.hpp"
@@ -802,6 +803,18 @@ public:
     }
   }
 
+  hardware_keys::State physical_keys_;
+  void ResetKeyboard() {
+    physical_keys_.Reset();
+  }
+  bool KeyboardKey(unsigned code, int value) {
+    if (!physical_keys_.Update(code, value)) return false;
+    if (suspended_ || lock_overlay_ || power_overlay_) { ResetKeyboard(); return true; }
+    if (!hardware_keyboard::Handle(code, value, physical_keys_) &&
+        code == KEY_ESC && value == 1) NavigateBack();
+    return true;
+  }
+
   void SetMouseConnected(bool connected) {
     if (!mouse_device_) return;
     if (!connected && mouse_connected_) {
@@ -822,6 +835,7 @@ public:
   }
 
   void MouseButton(bool pressed) {
+    if (pressed) hardware_keyboard::ClearFocus();
     if (!mouse_device_ || suspended_) return;
     mouse_pressed_ = pressed;
     // Consume every button edge even when press+release arrive in one frame.
@@ -845,6 +859,7 @@ public:
   }
 
   void SetPointer(const PointerEvent &event) {
+    if (event.pressed) hardware_keyboard::ClearFocus();
     const int32_t logical_x = transform_.ToLogicalX(event.x);
     const int32_t logical_y = transform_.ToLogicalY(event.y);
     // The Qualcomm OpenGL scanout presents LVGL's 90-degree texture in the
@@ -1062,6 +1077,7 @@ public:
   bool IsInitialized() const { return initialized_; }
 
   void SetSuspended(bool suspended) {
+    if (suspended) ResetKeyboard();
     suspended_ = suspended;
     SetMouseConnected(mouse_connected_);
     if (suspended_ && mouse_device_) {
@@ -1075,6 +1091,7 @@ public:
   }
 
   void ShowLockScreen() {
+    ResetKeyboard();
     if (!initialized_ || lock_overlay_ != nullptr) return;
     CancelEdgeSwipe();
     CancelRecentsSwipe();
@@ -1084,6 +1101,7 @@ public:
   }
 
   void ShowPowerMenu() {
+    ResetKeyboard();
     if (!initialized_ || power_overlay_ != nullptr || suspended_) return;
     CancelEdgeSwipe();
     CancelRecentsSwipe();
@@ -3889,6 +3907,8 @@ void Engine::SetMouseConnected(bool connected) { impl_->SetMouseConnected(connec
 void Engine::MouseMove(int dx, int dy) { impl_->MouseMove(dx, dy); }
 void Engine::MouseButton(bool pressed) { impl_->MouseButton(pressed); }
 void Engine::MouseWheel(int steps) { impl_->MouseWheel(steps); }
+bool Engine::KeyboardKey(unsigned code, int value) { return impl_->KeyboardKey(code, value); }
+void Engine::ResetKeyboard() { impl_->ResetKeyboard(); }
 void Engine::SetSuspended(bool suspended) { impl_->SetSuspended(suspended); }
 void Engine::ShowLockScreen() { impl_->ShowLockScreen(); }
 void Engine::ShowPowerMenu() { impl_->ShowPowerMenu(); }

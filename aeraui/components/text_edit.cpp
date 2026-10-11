@@ -12,9 +12,12 @@
 
 namespace aeraui::text_edit {
 namespace {
+lv_obj_t *physical_focus = nullptr;
 using namespace design;
 enum class Action { kCopy, kCut, kPaste, kAll, kClose };
 struct State {
+  ControlHandler control = nullptr;
+  void *control_context = nullptr;
   lv_obj_t *input = nullptr;
   lv_obj_t *root = nullptr;
   lv_obj_t *menu = nullptr;
@@ -541,12 +544,17 @@ void InputEvent(lv_event_t *event) {
   auto *input = lv_event_get_current_target_obj(event);
   switch (lv_event_get_code(event)) {
     case LV_EVENT_DELETE:
+      if (physical_focus == input) physical_focus = nullptr;
       state->input = nullptr;
       Close(state, false);
       delete state;
       break;
     case LV_EVENT_PRESSED:
+      physical_focus = input;
       if (active) Close(active);
+      break;
+    case LV_EVENT_FOCUSED:
+      physical_focus = input;
       break;
     case LV_EVENT_LONG_PRESSED:
       Observe(lv_event_get_indev(event));
@@ -585,6 +593,20 @@ void Attach(lv_obj_t *input) {
   lv_obj_add_event_cb(input, InputEvent, LV_EVENT_ALL, state);
   for (auto *device = lv_indev_get_next(nullptr); device; device = lv_indev_get_next(device))
     Observe(device);
+}
+
+lv_obj_t *FocusedInput() {
+  return physical_focus && lv_obj_is_visible(physical_focus) &&
+      lv_obj_get_screen(physical_focus) == lv_screen_active() &&
+      !lv_obj_has_state(physical_focus, LV_STATE_DISABLED) ? physical_focus : nullptr;
+}
+
+void SetControlHandler(lv_obj_t *input, ControlHandler handler, void *context) {
+  if (auto *state = Find(input)) { state->control = handler; state->control_context = context; }
+}
+void SendControl(lv_obj_t *input, unsigned key) {
+  if (auto *state = Find(input); state && state->control)
+    state->control(input, key, state->control_context);
 }
 
 void SetSelectAllOnHold(lv_obj_t *input, bool enabled) {

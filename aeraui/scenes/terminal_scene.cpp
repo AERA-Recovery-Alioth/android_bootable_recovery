@@ -249,6 +249,16 @@ void BuildTerminalScene(lv_obj_t *screen, ActionCallback callback,
     SetKeyboardVisible(static_cast<TerminalUi *>(lv_event_get_user_data(event)),
                        true);
   }, LV_EVENT_CLICKED, state);
+  lv_obj_add_event_cb(state->command, [](lv_event_t *event) {
+    SendCommand(static_cast<TerminalUi *>(lv_event_get_user_data(event)));
+  }, LV_EVENT_READY, state);
+  text_edit::SetControlHandler(state->command, [](lv_obj_t *input, unsigned key, void *) {
+    if (key == 3 || key == 4) {
+      const char bytes[] = {static_cast<char>(key), 0};
+      RecoveryTerminalWrite(bytes);
+      if (key == 3) lv_textarea_set_text(input, "");
+    }
+  }, state);
   lv_obj_add_event_cb(state->keyboard, [](lv_event_t *event) {
     auto *state = static_cast<TerminalUi *>(lv_event_get_user_data(event));
     if (lv_event_get_code(event) == LV_EVENT_READY) SendCommand(state);

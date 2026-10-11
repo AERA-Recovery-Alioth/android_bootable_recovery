@@ -133,6 +133,7 @@ int ev_init(void);
 void ev_exit(void);
 int ev_get(struct input_event *ev, int timeout_ms);
 int ev_has_mouse(void);
+unsigned ev_input_generation(void);
 
 // Resources
 
