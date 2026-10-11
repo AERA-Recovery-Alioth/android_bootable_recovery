@@ -1,5 +1,6 @@
 #include "scene.hpp"
 #include "ui_components.hpp"
+#include "pc_transfer_banner.hpp"
 #include "themed_app_art.hpp"
 #include "package_review.hpp"
 #include "update/payload_inspector.hpp"
@@ -31,6 +32,8 @@ BackupCancellation GetBackupCancellation() { return {}; }
 static bool pc_finalizing = false;
 BackupTransferStatistics GetBackupTransferStatistics() { return {120000000, 87500000, pc_finalizing, pc_finalizing ? 5U : 0U}; }
 bool CancelBackup(const std::string &, bool) { return false; }
+static bool upload_cancelled = false;
+bool CancelUpload(const std::string &) { upload_cancelled = true; return true; }
 }
 static std::string backup_root;
 static std::string file_root;
@@ -495,6 +498,48 @@ int main(int argc,char **argv) {
     assert(png_image_write_to_file(&image,path,0,frame.data(),0,nullptr));
   };
   auto *screen=lv_screen_active();
+  if (!strcmp(argv[1], "--pc-upload-progress")) {
+    widgets::PcTransferBanner banner;
+    aera::pc::UploadProgress progress;
+    progress.active = true; progress.id = "fixture";
+    progress.name = "SuperHybrid-very-long-package-name-to-check-the-upload-layout.zip";
+    progress.bytes = 2000000000; progress.received = 720000000;
+    progress.bytes_per_second = 85000000; progress.remaining_seconds = 15;
+    for (const char *language : {"en", "de_DE"}) {
+      assert(i18n::SetLanguage(language));
+      for (int density = 0; density <= 3; ++density) {
+        design::ApplyInterfaceSize(density);
+        banner.Refresh(progress);
+        auto *name = FindLabel(lv_layer_top(), progress.name.c_str());
+        assert(name); Tick(); AssertContained(name, lv_obj_get_parent(name));
+        auto *compact = lv_obj_get_parent(name);
+        assert(lv_obj_get_style_bg_opa(compact, LV_PART_MAIN) == LV_OPA_90);
+        assert(lv_obj_get_y(compact) > StatusBarHeight());
+        lv_obj_send_event(compact, LV_EVENT_CLICKED, nullptr);
+        assert(banner.Expanded());
+        auto *cancel = FindLabel(lv_layer_top(), i18n::Translate("Cancel transfer"));
+        assert(cancel); Tick(); AssertContained(cancel, lv_obj_get_parent(cancel));
+        auto *eta = FindLabel(lv_layer_top(), i18n::Format("About %s remaining", "0:15").c_str());
+        assert(eta); AssertContained(eta, lv_obj_get_parent(eta));
+        if (density == 2 && !strcmp(language, "en")) save("/tmp/aera-pc-upload-detail.png");
+        aera::pc::upload_cancelled = false;
+        lv_obj_send_event(lv_obj_get_parent(cancel), LV_EVENT_CLICKED, nullptr);
+        assert(aera::pc::upload_cancelled);
+        banner.Close(); assert(!banner.Expanded());
+        banner.Refresh(progress);
+        lv_obj_clean(screen);  // Navigation must not destroy the top-layer banner.
+        assert(FindLabel(lv_layer_top(), progress.name.c_str()));
+        if (density == 2 && !strcmp(language, "en")) save("/tmp/aera-pc-upload-banner.png");
+        progress.finalizing = true; banner.Refresh(progress);
+        assert(FindLabelContaining(lv_layer_top(), i18n::Translate("Finishing up")));
+        progress.finalizing = false;
+        banner.Refresh(progress, false);
+        assert(lv_obj_has_flag(compact, LV_OBJ_FLAG_HIDDEN));
+        banner.Refresh({}); assert(lv_obj_get_child_count(lv_layer_top()) == 0);
+      }
+    }
+    return 0;
+  }
   if (!strcmp(argv[1], "--pc-backup-progress")) {
     for (const char *language : {"en", "de_DE"}) {
       assert(i18n::SetLanguage(language));

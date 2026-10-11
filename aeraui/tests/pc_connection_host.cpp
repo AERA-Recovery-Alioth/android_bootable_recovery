@@ -195,6 +195,10 @@ int main(int argc, char **argv) {
           aera::pc::ResolveConnection(request.id, command != "deny", command == "remember");
       } else if (command == "run") run = true;
       else if (command == "hold") run = false;
+      else if (command == "cancel-upload") {
+        const auto progress = aera::pc::GetUploadProgress();
+        if (!progress.active || !aera::pc::CancelUpload(progress.id)) return 6;
+      }
       else if (command == "busy" || command == "idle") aera::pc::SetRecoveryBusy(command == "busy");
       else if (command == "wifi-on" || command == "wifi-off" || command == "wifi-change") {
         wifi_connected = command != "wifi-off";

@@ -38,6 +38,14 @@ struct BackupTransferStatistics {
   bool finalizing = false;
   uint64_t waiting_seconds = 0;
 };
+struct UploadProgress {
+  std::string id, name;
+  uint64_t bytes = 0, received = 0;
+  double bytes_per_second = 0, remaining_seconds = -1;
+  bool active = false, finalizing = false, cancelling = false;
+};
+UploadProgress GetUploadProgress();
+bool CancelUpload(const std::string &id);
 BackupTransferStatistics GetBackupTransferStatistics();
 bool SetEnabled(bool enabled, int port = 443, bool manual = true);
 void RefreshNetwork();

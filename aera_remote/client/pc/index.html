@@ -47,7 +47,7 @@
 <div class="section-title"><h2>Files</h2><span id="fileCount" class="small muted"></span></div>
 <label for="fileStorage">Storage</label><select id="fileStorage"></select>
 <div class="file-toolbar"><button id="folderUp" class="quiet" title="Parent folder" aria-label="Parent folder"><svg class="icon"><use href="#up"/></svg></button><div id="folderPath" class="folder-path"></div><button id="folderRefresh" class="quiet" title="Refresh folder" aria-label="Refresh folder"><svg class="icon"><use href="#refresh"/></svg></button></div>
-<div class="file-actions"><button id="folderNew"><svg class="icon"><use href="#folder-plus"/></svg>New folder</button><button id="fileUpload"><svg class="icon"><use href="#upload"/></svg>Upload file</button></div><input id="storageFile" type="file" hidden>
+<div class="file-actions"><button id="folderNew"><svg class="icon"><use href="#folder-plus"/></svg>New folder</button><button id="fileUpload"><svg class="icon"><use href="#upload"/></svg>Upload file</button><button id="fileUploadCancel" class="danger" hidden><svg class="icon"><use href="#close"/></svg>Cancel upload</button></div><input id="storageFile" type="file" hidden>
 <div id="fileList" class="file-list" aria-live="polite"></div><button id="filesMore" class="quiet" hidden>Load more</button>
 <div id="fileSelection" class="file-selection" hidden><div id="selectedName" class="file-name"></div><div id="selectedDetails" class="small muted"></div><div class="file-actions"><button id="fileDownload" title="Download file"><svg class="icon"><use href="#download"/></svg>Download</button><button id="fileInstall" class="primary" hidden><svg class="icon"><use href="#check"/></svg><span id="fileInstallLabel">Install ZIP</span></button><button id="fileRename">Rename</button><button id="fileDelete" class="danger" title="Delete file or empty folder"><svg class="icon"><use href="#trash"/></svg>Delete</button></div></div>
 </section>
@@ -114,7 +114,7 @@ async function refresh(){if(!state.token)return;const info=await api('status');d
 async function hashFile(file){const hash=await hashwasm.createSHA256();hash.init();for(let offset=0;offset<file.size;offset+=4*1024*1024){if(state.cancelled)throw new Error('Transfer cancelled.');hash.update(new Uint8Array(await file.slice(offset,offset+4*1024*1024).arrayBuffer()));const percent=Math.min(100,100*(offset+4*1024*1024)/file.size);$('progress').value=percent;$('percent').textContent=Math.floor(percent)+'%';$('bytes').textContent=`${size(Math.min(file.size,offset+4*1024*1024))} / ${size(file.size)}`;await new Promise(resolve=>setTimeout(resolve,0))}return hash.digest('hex')}
 async function transfer(){
   if(!state.file||state.busy)return;
-  state.busy=true;state.cancelled=false;state.job=null;controls();notice('');
+  state.busy=true;state.cancelled=false;state.job=null;state.receivingJob=null;controls();notice('');
   $('statusTitle').textContent='Calculating checksum';$('statusDetail').textContent=state.file.name;
   $('progressLabel').textContent='SHA-256';$('speed').textContent='--';
   try{
@@ -132,6 +132,7 @@ async function transfer(){
       xhr.setRequestHeader('Content-Type','application/octet-stream');
       const started=performance.now();
       xhr.upload.onprogress=event=>{
+        if(state.receivingJob?.id===job.id){renderUploadProgress(state.receivingJob);return}
         const sent=Math.min(event.loaded,file.size);const percent=100*sent/file.size;
         $('statusTitle').textContent=sent===file.size?'Verifying on recovery':'Transferring file';
         $('statusDetail').textContent=file.name;$('progressLabel').textContent='Transfer';
@@ -156,7 +157,18 @@ async function transfer(){
 function reviewLine(label,value){const row=document.createElement('div'),term=document.createElement('dt'),detail=document.createElement('dd');term.textContent=label;detail.textContent=value;row.append(term,detail);$('review').append(row)}
 function showConfirmation(){if(state.job?.phase!=='ready')return;$('review').replaceChildren();reviewLine('File',state.job.name);reviewLine('Size',size(state.job.bytes));if(state.job.partition){reviewLine('Partition',state.job.partition);reviewLine('Slots',state.job.both_slots?'Both slots':`Current slot (${state.info.slot})`)}else reviewLine('Device',state.info.device);$('confirmTitle').textContent=state.job.partition?'Confirm image flash':'Confirm ZIP installation';$('confirmInstall').textContent=state.job.partition?'Flash image':'Install ZIP';$('confirm').showModal()}
 async function install(){if(state.job?.phase!=='ready')return;$('confirmInstall').disabled=true;try{updateJob(await api('install',{id:state.job.id,confirm:true}));$('confirm').close();notice('')}catch(error){notice(error.message);$('confirm').close()}finally{$('confirmInstall').disabled=false}}
-async function discard(){state.cancelled=true;state.upload?.abort();if(state.job?.id&&state.job.phase!=='installing'){try{const job=await api('cancel',{id:state.job.id});if(!state.busy)updateJob(job)}catch(error){notice(error.message)}}controls()}
+async function discard(){
+  if(state.job?.phase==='installing'||state.job?.owned===false)return;
+  state.cancelled=true;controls();
+  try{
+    if(state.job?.id&&!['completed','failed','cancelled'].includes(state.job.phase)){
+      const job=await api('cancel',{id:state.job.id});
+      if(!state.busy)updateJob(job);
+    }
+    notice('Upload cancelled. No installation was started.');
+  }catch(error){notice(error.message)}
+  finally{state.upload?.abort();controls()}
+}
 async function answerPrompt(accepted){if(!state.prompt)return;$('promptAccept').disabled=$('promptDecline').disabled=true;try{await api('prompt',{id:state.job.id,prompt:state.prompt.id,accepted});$('installerPrompt').hidden=true}catch(error){notice(error.message)}finally{$('promptAccept').disabled=$('promptDecline').disabled=false}}
 $('connectButton').onclick=connect;$('computerName').onkeydown=event=>{if(event.key==='Enter')connect()};$('drop').onclick=()=>{if(!state.busy&&!['prepared','uploading','ready','queued','installing'].includes(state.job?.phase))$('fileInput').click()};$('drop').onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();$('drop').click()}};$('fileInput').onchange=()=>selectFile($('fileInput').files[0]);$('drop').ondragover=event=>{event.preventDefault();$('drop').classList.add('over')};$('drop').ondragleave=()=>$('drop').classList.remove('over');$('drop').ondrop=event=>{event.preventDefault();$('drop').classList.remove('over');selectFile(event.dataTransfer.files[0])};$('removeFile').onclick=()=>{state.file=null;$('fileInput').value='';$('fileInfo').hidden=$('imageFields').hidden=true;controls()};$('storage').onchange=$('partition').onchange=$('slots').onchange=controls;$('transfer').onclick=transfer;$('install').onclick=showConfirmation;$('confirmCancel').onclick=()=>$('confirm').close();$('confirmInstall').onclick=install;$('cancel').onclick=discard;$('promptAccept').onclick=()=>answerPrompt(true);$('promptDecline').onclick=()=>answerPrompt(false);$('disconnect').onclick=()=>{state.token='';connected(false)};$('forget').onclick=async()=>{try{await api('forget',{});try{localStorage.removeItem('aera.pc.key')}catch{}state.key='';state.token='';connected(false);notice('Saved approval removed.','success')}catch(error){notice(error.message)}};$('saveLog').onclick=()=>{const blob=new Blob([state.lastLog||$('log').textContent],{type:'text/plain'});const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='AERA-installer.log';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
 window.addEventListener('beforeunload',event=>{if(state.busy){event.preventDefault();event.returnValue=''}});

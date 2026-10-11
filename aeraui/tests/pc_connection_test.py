@@ -157,6 +157,44 @@ class PcConnectionTest(unittest.TestCase):
         self.assertEqual(self.request("/api/install", {"id": job["id"], "confirm": True})[0], 409)
         self.assertFalse(list(self.root.rglob("payload*")))
 
+    def test_02a_upload_progress_and_cancellation(self):
+        data = b"upload fixture" * 65536
+        for native in (False, True):
+            status, job = self.prepare(data, kind="file", name="cancelled.txt", folder=str(self.root))
+            self.assertEqual(status, 200)
+            connection = http.client.HTTPSConnection("127.0.0.1", self.port, context=self.context, timeout=8)
+            connection.connect()
+            connection.putrequest("PUT", "/api/upload/" + job["id"])
+            connection.putheader("Authorization", "Bearer " + self.token)
+            connection.putheader("Content-Length", str(len(data)))
+            connection.endheaders()
+            try:
+                for offset in range(0, 4 * 65536, 65536):
+                    time.sleep(.3)
+                    connection.send(data[offset:offset + 65536])
+                self.wait_phase("uploading")
+                status, state = self.request("/api/status")
+                self.assertFalse(state["busy"])
+                progress = state["job"]
+                self.assertEqual(progress["bytes"], len(data))
+                self.assertGreater(progress["received"], 0)
+                self.assertLess(progress["received"], len(data))
+                self.assertTrue(progress["upload_transfer"]["active"])
+                self.assertGreater(progress["upload_transfer"]["bytes_per_second"], 0)
+                self.assertGreater(progress["upload_transfer"]["remaining_seconds"], 0)
+                if native:
+                    self.command("cancel-upload")
+                else:
+                    self.assertEqual(self.request("/api/cancel", {"id": job["id"]})[0], 200)
+                cancelled = self.wait_phase("cancelled")
+                self.assertTrue(cancelled["cancel_requested"])
+                self.assertFalse(cancelled["upload_transfer"]["active"])
+            finally:
+                connection.close()
+            self.assertFalse((self.root / "cancelled.txt").exists())
+            self.assertFalse(list(self.root.rglob("payload*")))
+            self.assertEqual(self.request("/api/install", {"id": job["id"], "confirm": True})[0], 409)
+
     def test_03_verified_install_survives_disconnect(self):
         data = b"simulated ZIP, not a flashable package" * 32768
         status, job = self.prepare(data)

@@ -36,6 +36,7 @@
 #include "recorder/service.hpp"
 #include "scene.hpp"
 #include "ui_components.hpp"
+#include "pc_transfer_banner.hpp"
 #include "update/update_manager.hpp"
 #include "root/root_manager.hpp"
 #include "../components/power_transition.hpp"
@@ -427,6 +428,7 @@ public:
       lv_indev_delete(pointer_device_);
     pointer_device_ = nullptr;
     }
+    pc_transfer_.Clear();
     if (display_ != nullptr) {
       lv_display_delete(display_);
       display_ = nullptr;
@@ -668,6 +670,10 @@ public:
   }
 
   void NavigateHome() {
+    if (pc_transfer_.Expanded()) {
+      pc_transfer_.Close();
+      pc_transfer_.Refresh(aera::pc::GetUploadProgress());
+    }
     if (lock_overlay_ != nullptr) return;
     if (recents_overlay_ != nullptr) {
       DismissRecents();
@@ -692,6 +698,11 @@ public:
   }
 
   void NavigateBack(bool feedback = true) {
+    if (pc_transfer_.Expanded()) {
+      pc_transfer_.Close();
+      pc_transfer_.Refresh(aera::pc::GetUploadProgress());
+      return;
+    }
     if (feedback) RecoveryVibrate(Haptic::kTouch);
     if (recents_overlay_ != nullptr) {
       DismissRecents();
@@ -2898,6 +2909,10 @@ private:
     last_pc_poll_ = now;
     aera::pc::RefreshNetwork();
     auto status = aera::pc::GetStatus();
+    pc_transfer_.Refresh(aera::pc::GetUploadProgress(),
+        interactive_ready_ && !decryption_active_ && !decrypt_running_ &&
+        !operation_running_ && !fastboot_mode_ && !StatusBarShadeOpen() &&
+        !pc_overlay_ && !lock_overlay_ && !power_overlay_ && !recents_overlay_);
     if (!status.enabled && !status.manually_disabled && interactive_ready_ &&
         !decryption_active_ && !decrypt_running_ && !wifi_running_ && !fastboot_mode_ &&
         (last_pc_start_attempt_ == 0 || now - last_pc_start_attempt_ >= 5000)) {
@@ -3716,6 +3731,7 @@ private:
   lv_timer_t *volume_hide_timer_ = nullptr;
   lv_obj_t *notice_overlay_ = nullptr;
   lv_obj_t *pc_overlay_ = nullptr;
+  widgets::PcTransferBanner pc_transfer_;
   std::string pc_connection_id_, pc_job_id_;
   uint32_t last_pc_poll_ = 0, last_pc_platform_refresh_ = 0;
   uint32_t last_pc_start_attempt_ = 0;

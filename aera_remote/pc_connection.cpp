@@ -81,6 +81,11 @@ struct Transfer {
   int progress = 0, result = -1;
   bool shown = false;
   bool cancel_requested = false;
+  int upload_socket = -1;
+  bool upload_finalizing = false;
+  Clock::time_point upload_started{}, upload_sample{}, upload_last_data{};
+  uint64_t upload_sample_bytes = 0;
+  double upload_speed = 0;
   std::string save_path;
   bool existing_file = false;
   struct stat source{};
@@ -495,12 +500,52 @@ void Connect(SSL *tls, const Json::Value &body, bool polling) {
   }
   Reply(tls, result["state"] == "pending" ? 202 : 200, JsonText(result));
 }
+bool TerminalPhase(const std::string &phase);
+UploadProgress UploadProgressLocked() {
+  UploadProgress progress;
+  if (g_transfer.phase != "uploading" || g_transfer.existing_file) return progress;
+  progress.active = true;
+  progress.id = g_transfer.id; progress.name = g_transfer.name;
+  progress.bytes = g_transfer.bytes; progress.received = g_transfer.received;
+  progress.finalizing = g_transfer.upload_finalizing;
+  progress.cancelling = g_transfer.cancel_requested;
+  const auto now = Clock::now();
+  if (!progress.finalizing && !progress.cancelling &&
+      now - g_transfer.upload_last_data < std::chrono::seconds(2)) {
+    progress.bytes_per_second = g_transfer.upload_speed;
+    if (progress.bytes_per_second > 0 &&
+        now - g_transfer.upload_started >= std::chrono::seconds(1))
+      progress.remaining_seconds = (progress.bytes - std::min(progress.bytes, progress.received)) /
+          progress.bytes_per_second;
+  }
+  return progress;
+}
+bool CancelTransferLocked(const std::string &id) {
+  if (g_transfer.id != id || TerminalPhase(g_transfer.phase) || g_transfer.phase == "installing") return false;
+  if (g_transfer.phase == "uploading") {
+    g_transfer.cancel_requested = true;
+    g_transfer.detail = "Cancelling transfer...";
+    // Wake a stalled TLS reader, but keep the writer alive for its final response.
+    if (g_transfer.upload_socket >= 0) shutdown(g_transfer.upload_socket, SHUT_RD);
+  } else {
+    g_transfer.phase = "cancelled";
+    g_transfer.detail = "Transfer cancelled. No installation was started.";
+    if (g_transfer.request.job == aeraui::Job::kPcBackupOperation) storage::Channel().Stop();
+    RemoveTransferFiles(g_transfer);
+  }
+  return true;
+}
 Json::Value TransferStatus() {
   Json::Value state;
   state["id"] = g_transfer.id; state["name"] = g_transfer.name;
   state["phase"] = g_transfer.phase; state["detail"] = g_transfer.detail;
   state["bytes"] = Json::UInt64(g_transfer.bytes);
   state["received"] = Json::UInt64(g_transfer.received);
+  const auto upload = UploadProgressLocked();
+  state["upload_transfer"]["active"] = upload.active;
+  state["upload_transfer"]["bytes_per_second"] = upload.bytes_per_second;
+  state["upload_transfer"]["remaining_seconds"] = upload.remaining_seconds;
+  state["upload_transfer"]["finalizing"] = upload.finalizing;
   state["progress"] = g_transfer.progress; state["result"] = g_transfer.result;
   if (g_transfer.request.job == aeraui::Job::kPcBackupOperation &&
       g_transfer.request.backup_source == "computer" &&
@@ -1176,6 +1221,8 @@ void Upload(SSL *tls, const HttpRequest &request, const std::string &owner, unsi
       Error(tls, 409, "The upload does not match the prepared transfer."); return;
     }
     transfer = g_transfer; g_transfer.phase = "uploading";
+    g_transfer.upload_socket = SSL_get_fd(tls);
+    g_transfer.upload_started = g_transfer.upload_sample = g_transfer.upload_last_data = Clock::now();
   }
   const std::string partial = transfer.path + ".part";
   const int fd = open(partial.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
@@ -1184,12 +1231,26 @@ void Upload(SSL *tls, const HttpRequest &request, const std::string &owner, unsi
   uint64_t received = 0;
   std::array<char, 65536> buffer{};
   auto consume = [&](const char *bytes, size_t size) {
+    {
+      std::lock_guard<std::mutex> guard(g_lock);
+      if (g_transfer.id != transfer.id || g_transfer.cancel_requested ||
+          g_transfer.phase != "uploading" || !g_running.load() || g_generation.load() != generation) return false;
+    }
     if (!WriteAll(fd, bytes, size)) return false;
     SHA256_Update(&hash, bytes, size); received += size;
     std::lock_guard<std::mutex> guard(g_lock);
     if (!g_running.load() || g_generation.load() != generation ||
         g_transfer.id != transfer.id || g_transfer.phase != "uploading") return false;
     g_transfer.received = received;
+    const auto now = Clock::now();
+    const double elapsed = std::chrono::duration<double>(now - g_transfer.upload_sample).count();
+    g_transfer.upload_last_data = now;
+    if (elapsed >= .25) {
+      const double speed = (received - g_transfer.upload_sample_bytes) / elapsed;
+      g_transfer.upload_speed = g_transfer.upload_speed == 0 ? speed :
+          .7 * g_transfer.upload_speed + .3 * speed;
+      g_transfer.upload_sample = now; g_transfer.upload_sample_bytes = received;
+    }
     return true;
   };
   if (okay && !request.prefix.empty()) okay = consume(request.prefix.data(), request.prefix.size());
@@ -1200,6 +1261,13 @@ void Upload(SSL *tls, const HttpRequest &request, const std::string &owner, unsi
   }
   std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
   SHA256_Final(digest.data(), &hash);
+  {
+    std::lock_guard<std::mutex> guard(g_lock);
+    if (g_transfer.id == transfer.id) {
+      g_transfer.upload_socket = -1;
+      g_transfer.upload_finalizing = true;
+    }
+  }
   std::string failure;
   if (!okay || received != transfer.bytes) failure = "Transfer interrupted. No installation was started.";
   else if (Hex(digest.data(), digest.size()) != transfer.checksum) failure = "SHA-256 mismatch. No installation was started.";
@@ -1213,6 +1281,7 @@ void Upload(SSL *tls, const HttpRequest &request, const std::string &owner, unsi
       unlink(partial.c_str());
       return;
     }
+    if (g_transfer.cancel_requested) failure = "Transfer cancelled. No installation was started.";
     if (failure.empty() && rename(partial.c_str(), transfer.path.c_str()) != 0)
       failure = "Could not finalize the transferred file.";
     if (failure.empty() && transfer.save_path.empty() && transfer.request.job == aeraui::Job::kInstall)
@@ -1230,7 +1299,8 @@ void Upload(SSL *tls, const HttpRequest &request, const std::string &owner, unsi
     g_transfer.package_info = std::move(package_info);
     g_transfer.fast_request = std::move(transfer.fast_request);
     g_transfer.payload_request = std::move(transfer.payload_request);
-    g_transfer.phase = failure.empty() ? "ready" : "failed";
+    if (g_transfer.cancel_requested) failure = "Transfer cancelled. No installation was started.";
+    g_transfer.phase = g_transfer.cancel_requested ? "cancelled" : failure.empty() ? "ready" : "failed";
     g_transfer.detail = failure;
     if (!failure.empty()) RemoveTransferFiles(transfer);
     result = TransferStatus();
@@ -1520,10 +1590,8 @@ void Handle(SSL *tls, unsigned generation) {
       result = TransferStatus();
       }
     } else if (request.path == "/api/cancel") {
-      if (g_transfer.phase == "installing") { Error(tls, 409, "A running flash cannot be cancelled from the browser."); return; }
-      g_transfer.phase = "cancelled"; g_transfer.detail = "Transfer cancelled. No installation was started.";
-      if (g_transfer.request.job == aeraui::Job::kPcBackupOperation) storage::Channel().Stop();
-      RemoveTransferFiles(g_transfer); result = TransferStatus();
+      if (!CancelTransferLocked(g_transfer.id)) { Error(tls, 409, "This operation cannot be cancelled."); return; }
+      result = TransferStatus();
     } else if (request.path == "/api/prompt") {
       if (g_transfer.phase != "installing" || !body["prompt"].isString() ||
           g_prompt["id"] != body["prompt"] || !body["accepted"].isBool() ||
@@ -1880,6 +1948,14 @@ Status GetStatus() {
     status.pending_connection = g_pair.id;
   return status;
 }
+UploadProgress GetUploadProgress() {
+  std::lock_guard<std::mutex> guard(g_lock);
+  return UploadProgressLocked();
+}
+bool CancelUpload(const std::string &id) {
+  std::lock_guard<std::mutex> guard(g_lock);
+  return g_transfer.phase == "uploading" && CancelTransferLocked(id);
+}
 bool NeedsUiAttention() {
   std::lock_guard<std::mutex> guard(g_lock);
   return g_transfer.phase == "queued" || g_transfer.phase == "installing" ||
@@ -2169,6 +2245,8 @@ void ReleaseHttpRedirect() {}
 void RestoreHttpRedirect() {}
 std::string HttpRedirectLocation(const std::string &) { return {}; }
 Status GetStatus() { return {}; }
+UploadProgress GetUploadProgress() { return {}; }
+bool CancelUpload(const std::string &) { return false; }
 bool NeedsUiAttention() { return false; }
 void SetRecoveryBusy(bool) {}
 bool TakeRebootRequest(std::string *) { return false; }

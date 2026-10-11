@@ -89,7 +89,11 @@ controls = function() {
   $('transferLabel').textContent=state.saveFolder?'Upload file':/\.img$/i.test(state.file?.name||'')?'Transfer & flash':'Transfer & install';
   $('transfer').hidden=state.job?.phase==='ready'&&!state.saveFolder;
   if(workspace.download){$('cancel').hidden=false;$('cancel').disabled=false;$('cancel').textContent='Cancel download';}
-  else $('cancel').textContent='Discard transfer';
+  else $('cancel').textContent=state.busy||state.job?.phase==='uploading'?'Cancel upload':'Discard transfer';
+  $('fileUploadCancel').hidden=(!state.saveFolder&&!state.job?.save_path)||(!state.busy&&!['prepared','uploading','ready'].includes(state.job?.phase));
+  $('fileUploadCancel').disabled=state.cancelled||state.job?.owned===false;
+  if(workspace.download){$('fileUploadCancel').hidden=false;$('fileUploadCancel').disabled=false;}
+  $('fileUploadCancel').lastChild.textContent=workspace.download?' Cancel download':' Cancel upload';
   const imageTarget=state.info?.partitions.find(partition=>partition.path===$('partition').value);
   if(imageTarget&&!imageTarget.slot_select){$('slots').disabled=true;$('slots').value='current';}
   const blocked = !state.connected || activeJob() || !!state.info?.busy;
@@ -151,6 +155,19 @@ updateInfo = function(info) {
   controls();
 };
 const originalUpdateJob = updateJob;
+function renderUploadProgress(job) {
+  const transfer=job.upload_transfer;
+  if(!transfer?.active)return;
+  const percent=job.bytes?100*Math.min(job.received,job.bytes)/job.bytes:100;
+  $('statusTitle').textContent=job.cancel_requested?'Cancelling upload':transfer.finalizing?'Finishing transfer':'Receiving file on recovery';
+  $('statusDetail').textContent=job.name;
+  $('progressLabel').textContent='Transfer';$('progress').value=percent;$('percent').textContent=Math.floor(percent)+'%';
+  const mb=bytes=>(Number(bytes||0)/1000000).toFixed(1)+' MB';
+  $('bytes').textContent=mb(job.received)+' / '+mb(job.bytes);
+  const seconds=Math.max(0,Math.round(transfer.remaining_seconds));
+  const eta=transfer.remaining_seconds>=0?' / ~'+Math.floor(seconds/60)+':'+String(seconds%60).padStart(2,'0')+' remaining':'';
+  $('speed').textContent=transfer.finalizing?'Finishing up':mb(transfer.bytes_per_second)+'/s'+eta;
+}
 function renderRootInspection(job) {
   const panel=$('rootInspection');
   const visible=job.root_action==='inspect'&&job.phase==='completed'&&job.root_slot===$('rootSlot').value;
@@ -189,13 +206,23 @@ function renderRootInspection(job) {
     'No matching module / check latest release';offline.append(module);panel.append(offline);
 }
 updateJob = function(job) {
-  if (state.busy) return;
+  if (state.busy) {
+    if(state.upload&&job.id===state.job?.id){
+      state.receivingJob=job;
+      renderUploadProgress(job);
+      if(job.cancel_requested||job.phase==='cancelled'){
+        state.cancelled=true;state.upload.abort();notice('Upload cancelled. No installation was started.');
+      }
+    }
+    return;
+  }
   if(workspace.localJob){
     if(job.id&&job.id!==workspace.serverJobId&&job.id!==workspace.localJob.id)workspace.localJob=null;
     else job=workspace.localJob;
   }
   if (job.id===workspace.dismissed && ['completed','failed','cancelled'].includes(job.phase)) job={phase:'idle'};
   originalUpdateJob(job);
+  renderUploadProgress(job);
   renderRootInspection(job);
   if (job.root_action) {
     $('progressLabel').textContent = 'Root operation';
@@ -529,6 +556,7 @@ $('fileDownload').onclick=async()=>{
   }
 };
 $('fileUpload').onclick=()=>$('storageFile').click();
+$('fileUploadCancel').onclick=()=>{if(workspace.download)workspace.download.abort();else discard()};
 $('storageFile').onchange=async()=>{
   const file=$('storageFile').files[0];if(!file||activeJob()||!workspace.folder)return;
   const destination=workspace.folder.path;
@@ -536,7 +564,7 @@ $('storageFile').onchange=async()=>{
   $('fileInfo').hidden=false;$('fileName').textContent=file.name;$('fileDetails').textContent=size(file.size)+' / Save to '+state.saveFolder;
   $('imageFields').hidden=true;notice('');controls();$('storageFile').value='';
   await transfer();
-  if(state.job?.phase==='ready'&&state.job.save_path){
+  if(!state.cancelled&&state.job?.phase==='ready'&&state.job.save_path){
     try{updateJob(await api('install',{id:state.job.id,confirm:true}));await loadFolder(destination);}
     catch(error){notice(error.message);}
   }
