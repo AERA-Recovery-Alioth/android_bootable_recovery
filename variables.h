@@ -104,8 +104,6 @@ static const std::string AERA_NAVBAR_PATH =  Aera_Settings_Path + "/.navbar";
 static const std::string Aera_Home_Files = Aera_Home + "/Files";
 static const std::string Aera_Logs_Dir = Aera_Home + "/logs";
 static const std::string AERA_OTA_PATH =  Aera_Home + "/OTA";
-static const std::string Aera_sdcard_aroma_cfg = Aera_Home + "/aromafm.cfg";
-static const std::string Aera_aroma_cfg = Aera_Home_Files + "/AromaFM/AromaFM.zip.cfg";
 static const std::string Aera_Ramdisk_Files = "/AERA/Files";
 static const std::string Aera_tmp_dir = Aera_Tmp + "/aera";
 static const std::string Aera_ramdisk_dir = Aera_tmp_dir + "/ramdisk";
@@ -133,8 +131,6 @@ static int Aera_Current_ROM_IsMIUI = 0; // is the currently installed ROM a MIUI
 #define AERA_STARTUP_SCRIPT 		"/sbin/aerastart.sh"
 #define AERA_PS_BIN 			"/AERA/Files/ps"
 #define AERA_NEW_MAGISKBOOT 		"/AERA/Files/magiskboot_new"
-#define AERA_MAGISK_ZIP_INSTALLER 	"Magisk.zip"
-#define AERA_MAGISK_UNINSTALLER 		"uninstall.zip"
 
 #define AERA_THEME_VERSION 		"2.0"
 #define AERA_PASS_IN_PERSIST 		"/persist/.fsec"
@@ -166,7 +162,6 @@ static int Aera_Current_ROM_IsMIUI = 0; // is the currently installed ROM a MIUI
 #define AERA_ENABLE_MOCK_LOCATION        "fox_reboot_enable_mock_location"
 #define AERA_DISABLE_SECURE_BOOT         "fox_reboot_disable_secure_boot"
 #define AERA_ADVANCED_STOCK_REPLACE      "fox_reboot_advanced_stock_recovery_check"
-#define AERA_SAVE_LOAD_AROMAFM           "fox_reboot_saveload_aromafm_check"
 #define AERA_DISABLE_DEBUGGING           "fox_reboot_disable_debugging_check"
 #define AERA_ENABLE_DEBUGGING           	"fox_reboot_forced_debugging_check"
 #define AERA_DISABLE_FORCED_ENCRYPTION   "fox_reboot_forced_encryption_check"

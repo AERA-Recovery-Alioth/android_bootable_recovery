@@ -2906,24 +2906,6 @@ void TWFunc::OrangeFox_Startup(void)
   if (TWFunc::Path_Exists(Aera_Ramdisk_Files.c_str()))
     {
       DataManager::SetValue("aera_resource_dir", Aera_Ramdisk_Files.c_str());
-      if (TWFunc::Path_Exists(Aera_sdcard_aroma_cfg)) // Is there a backup CFG file under /sdcard/AERA/?
-	{
-	  if (TWFunc::Path_Exists(Aera_Home_Files + "/AromaFM"))
-	     TWFunc::copy_file(Aera_sdcard_aroma_cfg, Aera_aroma_cfg, 0644);
-	}
-      else
-	{
-	  if (!Path_Exists(Aera_Home))
-	    {
-	      if (!Create_Dir_Recursive(Aera_Home,  S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH, AID_MEDIA_RW, AID_MEDIA_RW))
-		  LOGINFO("Error making %s directory: %s\n", Aera_Home.c_str(), strerror(errno));
-	    }         
-	  if (Path_Exists(Aera_Home))
-	    {
-	      if (Path_Exists(Aera_aroma_cfg))
-		TWFunc::copy_file(Aera_aroma_cfg, Aera_sdcard_aroma_cfg, 0644);
-	    }
-	} // else
     }
   else
     {
@@ -4159,33 +4141,6 @@ void TWFunc::PrepareToFinish(void)
   // increment value, to show how many times we have called this
   Aera_IsDeactivation_Process_Called++;
 
-  // Check AromaFM Config
-  if (
-     (DataManager::GetIntValue(AERA_SAVE_LOAD_AROMAFM) == 1)
-  && (PartitionManager.Mount_By_Path("/sdcard", false))
-     )
-    {
-      string aromafm_path = Aera_Home;
-      string aromafm_file = aromafm_path + "/aromafm.cfg";
-      if (!Path_Exists(aromafm_path))
-	{
-	  if (mkdir
-	      (aromafm_path.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH))
-	    {
-	      LOGERR("Error creating %s directory: %s\n", aromafm_path.c_str(), strerror(errno));
-	    }
-	}
-
-      // Save AromaFM config (AromaFM.cfg)
-      if (Path_Exists(Aera_aroma_cfg))
-      	 {
-             if (copy_file(Aera_aroma_cfg, aromafm_file, 0644))
-	      {
-	         LOGERR("Error copying AromaFM config\n");
-	      }
-      	 }
-      PartitionManager.UnMount_By_Path("/sdcard", false);
-    }
 
   // restore the stock recovery ?
   #ifndef AERA_VANILLA_BUILD

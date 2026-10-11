@@ -530,7 +530,6 @@ static int Prepare_Update_Binary(const char *path, ZipArchiveHandle Zip) {
 
 static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype) {
 	int ret_val, pipe_fd[2], status, zip_verify;
-	int aroma_running = 0;
 	char buffer[1024];
 	FILE* child_data;
 	pipe(pipe_fd);
@@ -611,18 +610,8 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype) 
 					DataManager::SetValue("aera_installer_stage_detail", detail);
 					continue;
 				}
-	      		     if (strcmp(display_value, "AROMA Filemanager Finished...") == 0 && (aroma_running == 1)) {
-		  		aroma_running = 0;
-		  		gui_changeOverlay("");
-                  TWFunc::copy_file(Aera_aroma_cfg, Aera_sdcard_aroma_cfg, 0644);
-			     }
 			Append_Aera_Install_Status(display_value);
 	      		    gui_print("%s", display_value);
-	      		    if (strcmp(display_value, "(c) 2013-2015 by amarullz.com") == 0 && (aroma_running == 0)) {
-		  		aroma_running = 1;
-		  		gui_changeOverlay("black_out");
-                  TWFunc::copy_file(Aera_aroma_cfg, Aera_sdcard_aroma_cfg, 0644);
-			     }
 	    		}
 	  		else {
 	      			gui_print("\n");
@@ -704,10 +693,6 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype) 
 
 	int waitrc = TWFunc::Wait_For_Child(pid, &status, "Updater");
 
-  	// Should never happen, but in case of crash or other unexpected condition
-  	if (aroma_running == 1) {
-      		gui_changeOverlay("");
-    	}
 
   	// if updater-script doesn't find the correct device
   	if (WEXITSTATUS (status) == TW_ERROR_WRONG_DEVICE) {

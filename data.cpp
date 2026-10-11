@@ -754,14 +754,6 @@ void DataManager::SetDefaultValues()
   mConst.SetValue(AERA_RELEASE_CHANNEL_STR, AERA_BUILD_TYPE);
   mConst.SetValue("fox_branch", AERA_BRANCH);
 
-#ifdef AERA_MOVE_MAGISK_INSTALLER_TO_RAMDISK
-  mConst.SetValue("aera_magisk_path", Aera_Ramdisk_Files + "/OF_Magisk");
-#else
-  mConst.SetValue("aera_magisk_path", Aera_Home_Files);
-#endif
-  mConst.SetValue("fox_magisk_zip_installer", AERA_MAGISK_ZIP_INSTALLER);
-  mConst.SetValue("fox_magisk_uninstaller", AERA_MAGISK_UNINSTALLER);
-
   // override any hard-coded value in ui.xml
   mConst.SetValue("fox_theme_version", AERA_THEME_VERSION);
   //
@@ -775,7 +767,6 @@ void DataManager::SetDefaultValues()
   mConst.SetValue("aera_media_rw_data_file", AERA_MEDIA_RW_DATA_FILE);
   mConst.SetValue("aera_navbar_path", AERA_NAVBAR_PATH);
   mConst.SetValue("aera_ota_path", AERA_OTA_PATH);
-  mConst.SetValue("aroma_fm_zip", Aera_Home_Files + "/AromaFM/AromaFM.zip");
   #ifndef AERA_DELETE_INITD_ADDON
   mConst.SetValue("of_initd_zip", Aera_Home_Files + "/OF_initd.zip");
   #endif
@@ -954,10 +945,6 @@ void DataManager::SetDefaultValues()
     mConst.SetValue("no_splash_change", "1");
 #else
     mConst.SetValue("no_splash_change", "0");
-#endif
-
-#ifdef AERA_DELETE_MAGISK_ADDON
-    mConst.SetValue("no_magisk", "1");
 #endif
 
 // we only define this if it is turned off (set to zero)
@@ -1208,7 +1195,6 @@ void DataManager::SetDefaultValues()
   mPersist.SetValue(AERA_DISABLE_SECURE_RO, "0");
   mPersist.SetValue(AERA_DONT_REPLACE_STOCK, "0");
   mPersist.SetValue(AERA_ADVANCED_WARN_CHK, "0");
-  mPersist.SetValue(AERA_SAVE_LOAD_AROMAFM, "0");
   mPersist.SetValue(AERA_DISABLE_DEBUGGING, "0");
   mPersist.SetValue(AERA_ENABLE_DEBUGGING, "1");
   mData.SetValue(AERA_ENCRYPTED_DEVICE, "0"); //assume that the device is not encrypted
