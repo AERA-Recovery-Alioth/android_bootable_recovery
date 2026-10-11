@@ -126,6 +126,7 @@ std::string g_reboot_target, g_certificate_pem;
 Clock::time_point g_reboot_at;
 struct Download { std::string path, owner; Clock::time_point expires; };
 std::map<std::string, Download> g_downloads;
+std::set<std::string> g_cleaned_transfer_roots;
 
 std::string Hex(const unsigned char *data, size_t size) {
   constexpr char digits[] = "0123456789abcdef";
@@ -226,6 +227,7 @@ void RemoveTransferFiles(const Transfer &transfer) {
   if (transfer.existing_file || transfer.directory.empty()) return;
   unlink((transfer.path + ".part").c_str());
   unlink(transfer.path.c_str());
+  unlink((transfer.directory + "/.transfer.json").c_str());
   rmdir(transfer.directory.c_str());
 }
 bool SaveTrusted() {
@@ -386,6 +388,96 @@ std::string Trim(const std::string &value) {
   const auto first = value.find_first_not_of(" \t\r\n");
   if (first == std::string::npos) return {};
   return value.substr(first, value.find_last_not_of(" \t\r\n") - first + 1);
+}
+bool IsBootId(const std::string &id) {
+  if (id.size() != 36) return false;
+  for (size_t i = 0; i < id.size(); ++i) {
+    if (i == 8 || i == 13 || i == 18 || i == 23) {
+      if (id[i] != '-') return false;
+    } else if (!((id[i] >= '0' && id[i] <= '9') || (id[i] >= 'a' && id[i] <= 'f'))) return false;
+  }
+  return true;
+}
+std::string BootId() {
+  const auto id = Trim(ReadFile("/proc/sys/kernel/random/boot_id", 64));
+  return IsBootId(id) ? id : "";
+}
+bool MarkTransfer(const Transfer &transfer) {
+  const auto boot = BootId();
+  if (boot.empty()) return true;  // No trustworthy boot ID means no automatic cleanup.
+  Json::Value marker;
+  marker["schema"] = 1; marker["owner"] = "AERA-PC-TRANSFER";
+  marker["id"] = transfer.id; marker["boot_id"] = boot;
+  marker["payload"] = transfer.path.substr(transfer.path.find_last_of('/') + 1);
+  return AtomicFile(transfer.directory + "/.transfer.json", JsonText(marker));
+}
+bool RemoveOldTransfer(int parent, const std::string &id, const std::string &boot) {
+  const int directory = openat(parent, id.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (directory < 0) return true;
+  const int marker = openat(directory, ".transfer.json", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  struct stat info{};
+  std::array<char, 513> text{};
+  ssize_t count = -1;
+  if (marker >= 0 && fstat(marker, &info) == 0 && S_ISREG(info.st_mode) &&
+      info.st_nlink == 1 && info.st_size > 0 && info.st_size < static_cast<off_t>(text.size()))
+    count = read(marker, text.data(), text.size());
+  if (marker >= 0) close(marker);
+  Json::Value metadata;
+  if (count != info.st_size || count <= 0 || !ParseJson(std::string(text.data(), count), &metadata) ||
+      metadata["schema"] != 1 || metadata["owner"] != "AERA-PC-TRANSFER" || metadata["id"] != id ||
+      !metadata["boot_id"].isString() || !IsBootId(metadata["boot_id"].asString()) ||
+      metadata["boot_id"] == boot || (metadata["payload"] != "payload.zip" && metadata["payload"] != "payload.img")) {
+    close(directory); return true;
+  }
+  const auto payload = metadata["payload"].asString();
+  DIR *entries = fdopendir(dup(directory));
+  bool known = entries != nullptr;
+  if (entries) {
+    while (const auto *entry = readdir(entries)) {
+      const std::string name = entry->d_name;
+      if (name == "." || name == "..") continue;
+      if ((name != ".transfer.json" && name != payload && name != payload + ".part") ||
+          fstatat(directory, name.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0 ||
+          !S_ISREG(info.st_mode) || info.st_nlink != 1) { known = false; break; }
+    }
+    closedir(entries);
+  }
+  if (!known) { close(directory); return true; }
+  // Only these exact recovery-owned files are removed, never a recursive tree.
+  bool okay = true;
+  for (const auto &name : {payload, payload + ".part"})
+    if (unlinkat(directory, name.c_str(), 0) != 0 && errno != ENOENT) okay = false;
+  if (okay && unlinkat(directory, ".transfer.json", 0) != 0) okay = false;
+  close(directory);
+  if (okay) okay = unlinkat(parent, id.c_str(), AT_REMOVEDIR) == 0;
+  if (okay) fprintf(stderr, "PC connection: removed stale transfer %s from an earlier boot.\n", id.c_str());
+  return okay;
+}
+void CleanupTransferRoot(const std::string &root, const std::string &boot) {
+  const int storage = open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (storage < 0) return;
+  const int aera = openat(storage, "AERA", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  close(storage);
+  if (aera < 0) return;
+  const int parent = openat(aera, "PCTransfers", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  close(aera);
+  if (parent < 0) return;
+  struct stat info{};
+  if (fstat(parent, &info) != 0) { close(parent); return; }
+  const auto key = root + ":" + std::to_string(info.st_dev) + ":" + std::to_string(info.st_ino);
+  if (g_cleaned_transfer_roots.count(key)) { close(parent); return; }
+  DIR *entries = fdopendir(dup(parent));
+  bool okay = entries != nullptr;
+  if (entries) {
+    while (const auto *entry = readdir(entries)) {
+      const std::string id = entry->d_name;
+      if (!IsToken(id)) continue;
+      if (!RemoveOldTransfer(parent, id, boot)) okay = false;
+    }
+    closedir(entries);
+  }
+  close(parent);
+  if (okay) g_cleaned_transfer_roots.insert(key);
 }
 bool ReadHeaders(SSL *tls, HttpRequest *request) {
   std::string headers;
@@ -1104,6 +1196,10 @@ void PrepareTransfer(SSL *tls, const Json::Value &body, const std::string &owner
     next.directory = root + "/AERA/PCTransfers/" + next.id;
     next.path = next.directory + (body["kind"] == "zip" ? "/payload.zip" : "/payload.img");
     if (!MakeDirectories(next.directory)) { Error(tls, 409, "Could not create the transfer folder."); return; }
+    if (!MarkTransfer(next)) {
+      RemoveTransferFiles(next);
+      Error(tls, 409, "Could not record the temporary transfer ownership."); return;
+    }
     next.request.path = next.path;
     next.phase = "prepared";
     RemoveTransferFiles(g_transfer);
@@ -2039,6 +2135,28 @@ void RefreshPlatformInfo() {
   info["snapshots_safe"] = !snapshots.supported || (snapshots.metadata_readable && snapshots.safe_to_remove);
   std::lock_guard<std::mutex> guard(g_lock); g_platform = std::move(info);
 }
+void CleanupOldTransfers() {
+  const auto boot = BootId();
+  if (boot.empty()) return;
+  const bool locked = aeraui::RecoveryDataLocked();
+  std::set<std::string> roots;
+  auto add = [&](const std::string &path) {
+    char canonical[4096]; struct statvfs filesystem{}; struct statfs type{};
+    if (realpath(path.c_str(), canonical) && strcmp(canonical, "/") &&
+        (!locked || (strcmp(canonical, "/data") && strncmp(canonical, "/data/", 6))) &&
+        statvfs(canonical, &filesystem) == 0 && !(filesystem.f_flag & ST_RDONLY) &&
+        statfs(canonical, &type) == 0 && type.f_type != 0x01021994 && type.f_type != 0x858458f6)
+      roots.insert(canonical);
+  };
+  if (!locked) add(aeraui::RecoveryStorage());
+  for (const auto &volume : aeraui::RecoveryVolumes("storage")) {
+    if (locked && (volume.path == "/data" || volume.path == "/sdcard")) continue;
+    add(volume.path);
+  }
+  std::lock_guard<std::mutex> guard(g_lock);
+  if (g_recovery_busy || g_file_busy || !TerminalPhase(g_transfer.phase) || !g_reboot_target.empty()) return;
+  for (const auto &root : roots) CleanupTransferRoot(root, boot);
+}
 bool TakeConnectionRequest(ConnectionRequest *request) {
   std::lock_guard<std::mutex> guard(g_lock);
   if (!request || !g_running.load() || g_pair.id.empty() || g_pair.shown ||
@@ -2251,6 +2369,7 @@ bool NeedsUiAttention() { return false; }
 void SetRecoveryBusy(bool) {}
 bool TakeRebootRequest(std::string *) { return false; }
 void RefreshPlatformInfo() {}
+void CleanupOldTransfers() {}
 bool TakeConnectionRequest(ConnectionRequest *) { return false; }
 void ResolveConnection(const std::string &, bool, bool) {}
 bool TakeInstallRequest(InstallRequest *) { return false; }

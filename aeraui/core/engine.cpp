@@ -479,7 +479,7 @@ public:
     pc_overlay_ = nullptr;
     pc_connection_id_.clear();
     pc_job_id_.clear();
-    last_pc_poll_ = last_pc_platform_refresh_ = 0;
+    last_pc_poll_ = last_pc_platform_refresh_ = last_pc_cleanup_ = 0;
     last_pc_start_attempt_ = 0;
     suspended_ = false;
     interactive_ready_ = false;
@@ -2944,6 +2944,10 @@ private:
 #endif
     aera::pc::SetRecoveryBusy(pc_busy);
     if (pc_busy) return;
+    if (last_pc_cleanup_ == 0 || now - last_pc_cleanup_ >= 5000) {
+      last_pc_cleanup_ = now;
+      aera::pc::CleanupOldTransfers();
+    }
     if (status.enabled && now - last_pc_platform_refresh_ >= 2000) {
       last_pc_platform_refresh_ = now;
       aera::pc::RestoreHttpRedirect();
@@ -3733,7 +3737,7 @@ private:
   lv_obj_t *pc_overlay_ = nullptr;
   widgets::PcTransferBanner pc_transfer_;
   std::string pc_connection_id_, pc_job_id_;
-  uint32_t last_pc_poll_ = 0, last_pc_platform_refresh_ = 0;
+  uint32_t last_pc_poll_ = 0, last_pc_platform_refresh_ = 0, last_pc_cleanup_ = 0;
   uint32_t last_pc_start_attempt_ = 0;
   PointerEvent pointer_{};
   OperationScene operation_scene_{};

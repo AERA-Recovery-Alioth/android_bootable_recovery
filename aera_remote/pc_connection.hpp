@@ -59,6 +59,7 @@ void SetRecoveryBusy(bool busy);
 bool TakeRebootRequest(std::string *target);
 // These methods are called only by the UI thread, never by network handlers.
 void RefreshPlatformInfo();
+void CleanupOldTransfers();
 bool TakeConnectionRequest(ConnectionRequest *request);
 void ResolveConnection(const std::string &id, bool allow, bool remember);
 bool TakeInstallRequest(InstallRequest *request);

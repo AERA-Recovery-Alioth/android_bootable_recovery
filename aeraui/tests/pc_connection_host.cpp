@@ -199,6 +199,7 @@ int main(int argc, char **argv) {
         const auto progress = aera::pc::GetUploadProgress();
         if (!progress.active || !aera::pc::CancelUpload(progress.id)) return 6;
       }
+      else if (command == "cleanup-transfers") aera::pc::CleanupOldTransfers();
       else if (command == "busy" || command == "idle") aera::pc::SetRecoveryBusy(command == "busy");
       else if (command == "wifi-on" || command == "wifi-off" || command == "wifi-change") {
         wifi_connected = command != "wifi-off";

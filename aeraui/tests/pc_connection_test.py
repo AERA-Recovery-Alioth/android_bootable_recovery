@@ -4,6 +4,7 @@ import hashlib
 import http.client
 import json
 import pathlib
+import shutil
 import socket
 import ssl
 import subprocess
@@ -194,6 +195,62 @@ class PcConnectionTest(unittest.TestCase):
             self.assertFalse((self.root / "cancelled.txt").exists())
             self.assertFalse(list(self.root.rglob("payload*")))
             self.assertEqual(self.request("/api/install", {"id": job["id"], "confirm": True})[0], 409)
+
+    def test_02b_only_owned_transfers_from_an_earlier_boot_are_cleaned(self):
+        current = pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        previous = '11111111-1111-1111-1111-111111111111'
+        if previous == current:
+            previous = '22222222-2222-2222-2222-222222222222'
+        parent = self.root / 'AERA' / 'PCTransfers'
+        parent.mkdir(parents=True, exist_ok=True)
+        fixtures = []
+
+        def transfer(char, boot=previous, marked=True):
+            directory = parent / (char * 64)
+            directory.mkdir(); fixtures.append(directory)
+            (directory / 'payload.zip').write_bytes(b'simulated upload')
+            if marked:
+                (directory / '.transfer.json').write_text(json.dumps({
+                    'schema': 1, 'owner': 'AERA-PC-TRANSFER', 'id': directory.name,
+                    'boot_id': boot, 'payload': 'payload.zip'}))
+            return directory
+
+        try:
+            stale = transfer('1')
+            (stale / 'payload.zip.part').write_bytes(b'incomplete upload')
+            same_boot = transfer('2', current)
+            legacy = transfer('3', marked=False)
+            unknown = transfer('4')
+            (unknown / 'user-file.txt').write_text('must stay')
+            linked = transfer('5')
+            (linked / 'payload.zip').unlink()
+            (linked / 'payload.zip').symlink_to(unknown / 'user-file.txt')
+            invalid = transfer('6', 'not-a-boot-id')
+            backup = parent / 'backup-fixture'
+            backup.mkdir(); fixtures.append(backup)
+            (backup / 'keep.txt').write_text('staged restore backup')
+            self.command('busy'); self.command('cleanup-transfers')
+            self.assertTrue(stale.exists())
+            self.command('idle')
+            status, job = self.prepare(b'active transfer')
+            self.assertEqual(status, 200)
+            self.assertTrue((parent / job['id'] / '.transfer.json').exists())
+            self.command('cleanup-transfers')
+            self.assertTrue(stale.exists())  # Never clean during any live transfer.
+            self.assertEqual(self.request('/api/cancel', {'id': job['id']})[0], 200)
+            self.assertFalse((parent / job['id']).exists())
+            self.command('cleanup-transfers')
+            self.assertFalse(stale.exists())
+            for directory in (same_boot, legacy, unknown, linked, invalid, backup):
+                self.assertTrue(directory.exists())
+            self.assertEqual((unknown / 'user-file.txt').read_text(), 'must stay')
+            self.command('cleanup-transfers')
+            self.assertTrue(same_boot.exists())
+        finally:
+            self.command('idle')
+            for directory in fixtures:
+                if directory.exists():
+                    shutil.rmtree(directory)
 
     def test_03_verified_install_survives_disconnect(self):
         data = b"simulated ZIP, not a flashable package" * 32768
