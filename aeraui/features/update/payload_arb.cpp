@@ -15,6 +15,7 @@
 #include <bzlib.h>
 #include <openssl/sha.h>
 #include <xz.h>
+#include "update_engine/common/zstd_decode.h"
 #include <fcntl.h>
 #include <linux/fs.h>
 #include <sys/ioctl.h>
@@ -54,6 +55,15 @@ bool Decode(int type, std::vector<uint8_t> &input, std::vector<uint8_t> &out) {
     unsigned size = out.size();
     return BZ2_bzBuffToBuffDecompress(reinterpret_cast<char *>(out.data()), &size,
         reinterpret_cast<char *>(input.data()), input.size(), 0, 0) == BZ_OK && size == out.size();
+  }
+  if (type == 14) {
+    size_t offset = 0;
+    return chromeos_update_engine::DecodeZstd(input.data(), input.size(), out.size(),
+        [&](const void* bytes, size_t count) {
+          memcpy(out.data() + offset, bytes, count);
+          offset += count;
+          return true;
+        });
   }
   if (type != 8) return false;
   static std::once_flag crc;
@@ -166,7 +176,7 @@ Arb InspectArb(int fd, uint64_t base, uint64_t length,
     uint64_t work = 0;
     for (const auto &op : p.operations()) {
       const auto type = static_cast<int>(op.type());
-      if (type != 0 && type != 1 && type != 8 && type != 6)
+      if (type != 0 && type != 1 && type != 8 && type != 6 && type != 14)
         return {false, 0, "xbl_config requires an unsupported or source-dependent operation"};
       uint64_t expanded = 0;
       for (const auto &extent : op.dst_extents()) {

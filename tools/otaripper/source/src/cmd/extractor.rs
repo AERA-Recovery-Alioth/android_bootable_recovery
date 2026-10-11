@@ -1214,6 +1214,7 @@ impl<'a> Extractor<'a> {
                 let data = self.extract_data(op, payload, pb, total_dst_size)?;
                 let mut decoder = zstd::stream::read::Decoder::new(&*data)
                     .context("failed to initialize zstd decoder")?;
+                if self.cmd.aera { decoder.window_log_max(27)?; }
                 self.run_op_replace(&mut decoder, &mut dst_extents, block_size, simd)?;
                 if matches!(payload.data, crate::payload::PayloadData::Local(_)) {
                     pb.inc(total_dst_size as u64);

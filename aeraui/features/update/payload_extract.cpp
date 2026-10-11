@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <bzlib.h>
 #include <xz.h>
+#include "update_engine/common/zstd_decode.h"
 #include <openssl/sha.h>
 #include <ziparchive/zip_archive.h>
 
@@ -72,6 +73,15 @@ bool Decode(int type, std::vector<uint8_t> &in, std::vector<uint8_t> &out) {
     return BZ2_bzBuffToBuffDecompress(reinterpret_cast<char *>(out.data()), &length,
         reinterpret_cast<char *>(in.data()), in.size(), 0, 0) == BZ_OK && length == out.size();
   }
+  if (type == 14) {
+    size_t offset = 0;
+    return chromeos_update_engine::DecodeZstd(in.data(), in.size(), out.size(),
+        [&](const void* bytes, size_t count) {
+          memcpy(out.data() + offset, bytes, count);
+          offset += count;
+          return true;
+        });
+  }
   if (type != 8) return false;
   static std::once_flag crc;
   std::call_once(crc, xz_crc32_init);
@@ -103,7 +113,7 @@ std::string ExtractionError(const PartitionUpdate &p, uint64_t block, uint64_t d
   std::vector<std::pair<uint64_t, uint64_t>> ranges;
   for (const auto &op : p.operations()) {
     const int type = op.type();
-    if ((type != 0 && type != 1 && type != 6 && type != 7 && type != 8) ||
+    if ((type != 0 && type != 1 && type != 6 && type != 7 && type != 8 && type != 14) ||
         op.src_extents_size() || op.has_src_sha256_hash()) return "Requires an incremental update operation";
     uint64_t bytes = 0;
     for (const auto &e : op.dst_extents()) {
@@ -174,7 +184,7 @@ static bool ProcessImages(const std::string &path, const std::string &manifest_h
     if (!unique.insert(p.partition_name()).second) return fail("Duplicate partition in manifest");
     for (const auto &op : p.operations())
       if (p.has_old_partition_info() || op.src_extents_size() || op.has_src_sha256_hash() ||
-          (op.type() != 0 && op.type() != 1 && op.type() != 6 && op.type() != 7 && op.type() != 8))
+          (op.type() != 0 && op.type() != 1 && op.type() != 6 && op.type() != 7 && op.type() != 8 && op.type() != 14))
         return fail("Incremental payloads are not supported by Advanced extraction");
     if (!selected.count(p.partition_name())) continue;
     auto reason = ExtractionError(p, manifest.block_size(), entry.uncompressed_length - data_start);

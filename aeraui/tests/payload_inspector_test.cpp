@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <openssl/sha.h>
 #include <bzlib.h>
+#include "update_engine/common/zstd_decode.h"
 #include "update_engine/update_metadata.pb.h"
 #include "ota_metadata.pb.h"
 #include <cstdlib>
@@ -476,13 +477,19 @@ TEST(PayloadArb, BothSlotsMustBeCheckedBeforeInstall) {
     EXPECT_TRUE(ArbAllowsInstall(D::NotApplicable, acknowledged));
   }
 }
-TEST(PayloadArb, RawBzipAndIntegrity) {
-  for (bool compressed : {false, true}) {
+TEST(PayloadArb, RawBzipZstdAndIntegrity) {
+  for (int compression : {0, 1, 14}) {
     auto image = Firmware(7), data = image;
-    if (compressed) {
+    if (compression == 1) {
       data.resize(8192); unsigned length = data.size();
       ASSERT_EQ(BZ2_bzBuffToBuffCompress(reinterpret_cast<char *>(data.data()), &length,
           reinterpret_cast<char *>(image.data()), image.size(), 9, 0, 30), BZ_OK);
+      data.resize(length);
+    }
+    if (compression == 14) {
+      data.resize(ZSTD_compressBound(image.size()));
+      auto length = ZSTD_compress(data.data(), data.size(), image.data(), image.size(), 3);
+      ASSERT_FALSE(ZSTD_isError(length));
       data.resize(length);
     }
     TemporaryFile file;
@@ -493,8 +500,7 @@ TEST(PayloadArb, RawBzipAndIntegrity) {
     p->mutable_new_partition_info()->set_size(image.size());
     p->mutable_new_partition_info()->set_hash(Digest(image));
     auto *op = p->add_operations();
-    op->set_type(compressed ? chromeos_update_engine::InstallOperation::REPLACE_BZ :
-                             chromeos_update_engine::InstallOperation::REPLACE);
+    op->set_type(static_cast<chromeos_update_engine::InstallOperation::Type>(compression));
     op->set_data_length(data.size()); op->set_data_sha256_hash(Digest(data));
     op->set_data_offset(0);
     auto *extent = op->add_dst_extents();
@@ -645,6 +651,42 @@ TEST(PayloadExtract, HashFailureRemovesOutput) {
   f.manifest.mutable_partitions(0)->mutable_new_partition_info()->set_hash(std::string(32, 'x'));
   auto info = f.Pack(); std::string error;
   EXPECT_FALSE(f.Extract(info, error)); EXPECT_FALSE(f.Exists());
+}
+TEST(PayloadExtract, ZstdVerifiedImageAndMalformedStreams) {
+  for (int fault = 0; fault < 5; ++fault) {
+    ExtractFixture f;
+    f.data.resize(ZSTD_compressBound(f.image.size()));
+    const size_t length = ZSTD_compress(f.data.data(), f.data.size(), f.image.data(), f.image.size(), 3);
+    ASSERT_FALSE(ZSTD_isError(length));
+    f.data.resize(length);
+    if (fault == 1) f.data.pop_back();
+    if (fault == 2) f.data.push_back(0);
+    if (fault == 3) f.data[0] ^= 0xff;
+    if (fault == 4) f.manifest.mutable_partitions(0)->mutable_new_partition_info()->set_hash(std::string(32, 'x'));
+    auto* op = f.manifest.mutable_partitions(0)->mutable_operations(0);
+    op->set_type(chromeos_update_engine::InstallOperation::REPLACE_ZSTD);
+    op->set_data_length(f.data.size());
+    op->set_data_sha256_hash(Digest(f.data));
+    auto info = f.Pack();
+    ASSERT_TRUE(info.valid) << info.error;
+    EXPECT_FALSE(info.incremental);
+    ASSERT_TRUE(info.partitions[0].extractable);
+    std::string error;
+    EXPECT_EQ(f.Extract(info, error), fault == 0) << error;
+    EXPECT_EQ(f.Exists(), fault == 0);
+  }
+}
+TEST(PayloadZstd, ExactOutputSizeAndSinkFailure) {
+  std::string plain(200000, 'z');
+  std::vector<char> compressed(ZSTD_compressBound(plain.size()));
+  auto size = ZSTD_compress(compressed.data(), compressed.size(), plain.data(), plain.size(), 3);
+  ASSERT_FALSE(ZSTD_isError(size));
+  auto accept = [](const void*, size_t) { return true; };
+  EXPECT_TRUE(chromeos_update_engine::DecodeZstd(compressed.data(), size, plain.size(), accept));
+  EXPECT_FALSE(chromeos_update_engine::DecodeZstd(compressed.data(), size, plain.size() - 1, accept));
+  EXPECT_FALSE(chromeos_update_engine::DecodeZstd(compressed.data(), size, plain.size() + 1, accept));
+  EXPECT_FALSE(chromeos_update_engine::DecodeZstd(compressed.data(), size, plain.size(),
+      [](const void*, size_t) { return false; }));
 }
 TEST(PayloadExtract, ParallelOperationsAndMultiImageProgress) {
   ExtractFixture f(true);

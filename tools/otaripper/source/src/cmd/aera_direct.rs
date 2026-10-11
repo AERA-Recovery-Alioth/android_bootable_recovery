@@ -39,7 +39,7 @@ fn validate(p: &PartitionUpdate, block: u64, data: &[u8]) -> Result<u64> {
     ensure!(info.hash.as_ref().is_some_and(|h| h.len() == 32), "Missing image SHA-256");
     let mut ranges = Vec::new();
     for op in &p.operations {
-        ensure!(matches!(op.r#type, 0 | 1 | 6 | 7 | 8) && op.src_extents.is_empty() &&
+        ensure!(matches!(op.r#type, 0 | 1 | 6 | 7 | 8 | 14) && op.src_extents.is_empty() &&
             op.src_sha256_hash.is_none(), "Unsupported operation");
         let mut decoded = 0u64;
         for extent in &op.dst_extents {
@@ -97,6 +97,11 @@ fn write_operation(file: &File, op: &crate::proto::chromeos_update_engine::Insta
                     8 => {
                         let stream = liblzma::stream::Stream::new_stream_decoder(80 * 1024 * 1024, 0)?;
                         Box::new(liblzma::read::XzDecoder::new_stream(input, stream))
+                    }
+                    14 => {
+                        let mut decoder = zstd::stream::read::Decoder::new(input)?;
+                        decoder.window_log_max(27)?;
+                        Box::new(decoder)
                     }
                     _ => unreachable!(),
                 }
@@ -338,7 +343,7 @@ mod tests {
     #[test]
     fn codecs_write_multiple_extents_in_manifest_order() {
         let plain: Vec<u8> = (0..1024).map(|n| (n / 512 + 1) as u8).collect();
-        for kind in [0, 1, 8] {
+        for kind in [0, 1, 8, 14] {
             let input = match kind {
                 1 => {
                     let mut e = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::best());
@@ -348,6 +353,7 @@ mod tests {
                     let mut e = liblzma::write::XzEncoder::new(Vec::new(), 6);
                     e.write_all(&plain).unwrap(); e.finish().unwrap()
                 }
+                14 => zstd::encode_all(&plain[..], 3).unwrap(),
                 _ => plain.clone(),
             };
             let mut op = operation(kind, 1, 1, &input);
@@ -422,6 +428,21 @@ mod tests {
             let op = operation(8, 0, (target_size / 512) as u64, &data);
             assert!(write_image(&file, &partition(vec![op], target_size as u64), 512, &data, 1).is_err());
             assert_eq!(&contents(&file, target_size + 512)[target_size..], &vec![0xee; 512]);
+        }
+    }
+    #[test]
+    fn zstd_rejects_invalid_frames_and_output_lengths() {
+        for fault in 0..5 {
+            let plain = vec![7; if fault == 3 { 511 } else if fault == 4 { 513 } else { 512 }];
+            let mut data = zstd::encode_all(&plain[..], 3).unwrap();
+            if fault == 0 { data.pop(); }
+            if fault == 1 { data[0] ^= 0xff; }
+            if fault == 2 { data.push(0xff); }
+            let file = tempfile::tempfile().unwrap();
+            file.write_all_at(&vec![0xee; 1024], 0).unwrap();
+            let p = partition(vec![operation(14, 0, 1, &data)], 512);
+            assert!(write_image(&file, &p, 512, &data, 1).is_err());
+            assert_eq!(&contents(&file, 1024)[512..], &vec![0xee; 512]);
         }
     }
     #[test]

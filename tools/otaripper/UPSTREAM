@@ -7,7 +7,8 @@ Author: Syed Insaf
 AERA additions in source/src/cmd:
 - --aera recovery integration mode with an exact, empty output directory.
 - Machine-readable progress at 10 Hz, explicit partition selection and strict hashes.
-- Safe partition names and bounded XZ decoder memory in recovery mode.
+- Safe partition names and bounded XZ/ZSTD decoder memory in recovery mode.
+- ZSTD (REPLACE_ZSTD, operation 14) enabled in the verified direct writer.
 - Disable terminal decoration/metadata scanning in recovery mode.
 - Explicit --aera-block-fd direct-write phase using only an inherited block fd.
   Independently checks the reviewed manifest, extent coverage, bounded codecs and

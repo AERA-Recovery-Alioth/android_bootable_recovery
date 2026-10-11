@@ -127,6 +127,7 @@ const char *OperationName(InstallOperation::Type type) {
     case InstallOperation::ZERO: return "zero";
     case InstallOperation::DISCARD: return "discard";
     case InstallOperation::REPLACE_XZ: return "xz";
+    case InstallOperation::REPLACE_ZSTD: return "zstd";
     case InstallOperation::PUFFDIFF: return "puffdiff";
     case InstallOperation::BROTLI_BSDIFF: return "brotli diff";
     case InstallOperation::ZUCCHINI: return "zucchini";
@@ -360,7 +361,7 @@ Info InspectZip(const std::string &path, bool read_arb) {
     for (const auto &operation : partition.operations()) {
       const int type = static_cast<int>(operation.type());
       if (operation.src_extents_size() || operation.has_src_sha256_hash() ||
-          type == 2 || type == 3 || type == 4 || type == 5 || type >= 9)
+          (type != 0 && type != 1 && type != 6 && type != 7 && type != 8 && type != 14))
         info.incremental = true;
       operation_types.insert(OperationName(operation.type()));
     }
