@@ -43,6 +43,18 @@ target_compile_definitions(ui_check PRIVATE
 target_compile_options(ui_check PRIVATE -UNDEBUG)
 target_link_libraries(ui_check PRIVATE lvgl PNG::PNG JPEG::JPEG Threads::Threads ZLIB::ZLIB)
 enable_testing()
+set(AERA_TINYXML2_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../external/tinyxml2")
+add_executable(android_packages_xml_test android_packages_xml_test.cpp
+  ../features/backup/android_packages_xml.cpp "${AERA_TINYXML2_DIR}/tinyxml2.cpp")
+target_include_directories(android_packages_xml_test PRIVATE "${AERA_TINYXML2_DIR}")
+target_compile_options(android_packages_xml_test PRIVATE -UNDEBUG -fno-exceptions)
+add_test(NAME android_package_xml_codec COMMAND android_packages_xml_test)
+add_executable(app_registration_test app_registration_test.cpp
+  ../features/backup/android_packages_xml.cpp ../features/backup/app_registration.cpp
+  "${AERA_TINYXML2_DIR}/tinyxml2.cpp")
+target_include_directories(app_registration_test PRIVATE "${AERA_TINYXML2_DIR}")
+target_compile_options(app_registration_test PRIVATE -UNDEBUG -fno-exceptions)
+add_test(NAME app_backup_package_registration COMMAND app_registration_test)
 add_executable(hardware_keys_test hardware_keys_test.cpp)
 target_compile_options(hardware_keys_test PRIVATE -UNDEBUG)
 add_test(NAME physical_keyboard_mapping COMMAND hardware_keys_test)
@@ -267,3 +279,22 @@ target_compile_definitions(status_gesture_test PRIVATE AERA_DEFAULT_LANGUAGE="en
 target_compile_options(status_gesture_test PRIVATE -UNDEBUG)
 target_link_libraries(status_gesture_test PRIVATE lvgl PNG::PNG Threads::Threads jsoncpp_static ZLIB::ZLIB)
 add_test(NAME status_gesture_cancellation COMMAND status_gesture_test)
+
+find_program(AERA_NODE_EXECUTABLE node)
+if(AERA_NODE_EXECUTABLE)
+  add_test(NAME pc_snapshot_label COMMAND "${AERA_NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/pc_snapshot_label_test.js")
+endif()
+
+find_package(Protobuf QUIET)
+find_path(AERA_INCFS_HEADERS linux/incrementalfs.h
+  HINTS "${CMAKE_CURRENT_SOURCE_DIR}/../../../../system/incremental_delivery/incfs/kernel-headers")
+if(Protobuf_FOUND AND AERA_INCFS_HEADERS)
+  add_executable(incremental_apks_test incremental_apks_test.cpp
+    ../features/backup/incremental_apks.cpp)
+  target_include_directories(incremental_apks_test PRIVATE "${AERA_INCFS_HEADERS}")
+  target_compile_options(incremental_apks_test PRIVATE -UNDEBUG -fno-exceptions
+    -Wall -Wextra -Werror)
+  target_link_libraries(incremental_apks_test PRIVATE protobuf::libprotobuf-lite Threads::Threads)
+  add_test(NAME incremental_apk_mapping_and_bind_records COMMAND incremental_apks_test)
+endif()

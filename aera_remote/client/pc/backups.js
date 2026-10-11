@@ -11,6 +11,16 @@ function nextBackupName(){
   backups.generatedName=base+(backupNameSequence?'-'+backupNameSequence:'');
   $('backupName').value=backups.generatedName;
 }
+function snapshotLabel(snapshot){
+  const date=new Date(snapshot.time);
+  const when=Number.isNaN(date.getTime())?'Unknown date':date.toLocaleString(undefined,
+    {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+  const bytes=snapshot.bytes;
+  const amount=Number.isFinite(bytes)&&bytes>=0?
+    new Intl.NumberFormat(undefined,{maximumFractionDigits:1}).format(bytes/1000000)+' MB':'--';
+  const id=typeof snapshot.id==='string'?snapshot.id.slice(0,8):'--';
+  return `${when} \u00b7 ${amount} \u00b7 ID ${id}`;
+}
 function backupChoice(name){return document.querySelector(`input[name="${name}"]:checked`).value}
 function backupOperation(){return backupChoice('backupOperation')}
 function appBackup(){return backupChoice('backupKind')==='apps'}
@@ -295,7 +305,7 @@ updateJob=function(job){
       if(job.backup_action==='inspect'){backups.choices=result.partitions||[];backups.selected=new Set(backups.choices.map(p=>p.path));renderBackupChoices()}
       if(job.backup_action==='snapshots'){
         backups.snapshots=result.snapshots||[];$('backupSnapshot').replaceChildren(new Option('Select snapshot',''));
-        for(const snapshot of backups.snapshots)$('backupSnapshot').add(new Option(`${snapshot.time} / ${size(snapshot.bytes)} / ${snapshot.id.slice(0,8)}`,snapshot.id));
+        for(const snapshot of backups.snapshots)$('backupSnapshot').add(new Option(snapshotLabel(snapshot),snapshot.id));
         if(backups.snapshots.length)$('backupSnapshot').value=backups.snapshots[0].id;
         snapshotChoices();
       }

@@ -14,6 +14,7 @@
 #include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
+#include <filesystem>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -40,6 +41,8 @@
 #include "browser/runtime.hpp"
 #include "backup/app_vault.hpp"
 #include "backup/app_vault_progress.hpp"
+#include "backup/app_registration.hpp"
+#include "backup/incremental_apks.hpp"
 #include "ui_components.hpp"
 #include "src/misc/cache/instance/lv_image_cache.h"
 
@@ -85,6 +88,8 @@ struct App {
 struct SnapshotApp {
   std::string package;
   std::string name;
+  std::string icon_png;
+  std::unique_ptr<AppIcon> icon;
   std::vector<std::string> paths;
   bool selected = true;
 };
@@ -340,8 +345,8 @@ void ReadAppMetadata(App &app) {
   }
 }
 
-std::string RemoteAppIcon(const App *app) {
-  if (!app || !app->icon) return {};
+std::string RemoteIcon(const AppIcon *icon) {
+  if (!icon) return {};
   png_image image{};
   image.version = PNG_IMAGE_VERSION;
   image.width = kIconPixels;
@@ -349,11 +354,11 @@ std::string RemoteAppIcon(const App *app) {
   image.format = PNG_FORMAT_BGRA;
   png_alloc_size_t length = 0;
   if (!png_image_write_to_memory(&image, nullptr, &length, 0,
-                                app->icon->pixels.data(), 0, nullptr) ||
+                                icon->pixels.data(), 0, nullptr) ||
       length > 32768) return {};
   std::vector<unsigned char> png(length);
   if (!png_image_write_to_memory(&image, png.data(), &length, 0,
-                                app->icon->pixels.data(), 0, nullptr)) return {};
+                                icon->pixels.data(), 0, nullptr)) return {};
   std::string encoded(4 * ((length + 2) / 3) + 1, '\0');
   const int size = EVP_EncodeBlock(reinterpret_cast<unsigned char *>(encoded.data()),
                                  png.data(), static_cast<int>(length));
@@ -362,8 +367,59 @@ std::string RemoteAppIcon(const App *app) {
   return "data:image/png;base64," + encoded;
 }
 
+std::string RemoteAppIcon(const App *app) {
+  return RemoteIcon(app ? app->icon.get() : nullptr);
+}
+
+bool SavedIconEncoding(const std::string &uri) {
+  constexpr char prefix[] = "data:image/png;base64,";
+  if (uri.compare(0, sizeof(prefix) - 1, prefix)) return false;
+  const std::string encoded = uri.substr(sizeof(prefix) - 1);
+  return !encoded.empty() && encoded.size() <= 44000 && encoded.size() % 4 == 0 &&
+      encoded.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=") ==
+          std::string::npos;
+}
+
+std::unique_ptr<AppIcon> SavedAppIcon(const std::string &uri) {
+  if (!SavedIconEncoding(uri)) return nullptr;
+  const std::string encoded = uri.substr(strlen("data:image/png;base64,"));
+  std::vector<unsigned char> bytes(encoded.size() / 4 * 3);
+  int size = EVP_DecodeBlock(bytes.data(),
+      reinterpret_cast<const unsigned char *>(encoded.data()), encoded.size());
+  if (size <= 0) return nullptr;
+  if (encoded.back() == '=') --size;
+  if (encoded.size() > 1 && encoded[encoded.size() - 2] == '=') --size;
+  png_image image{};
+  image.version = PNG_IMAGE_VERSION;
+  if (!png_image_begin_read_from_memory(&image, bytes.data(), size)) return nullptr;
+  auto icon = std::make_unique<AppIcon>();
+  bool okay = image.width == kIconPixels && image.height == kIconPixels;
+  if (okay) {
+    image.format = PNG_FORMAT_BGRA;
+    icon->pixels.resize(kIconPixels * kIconPixels * 4);
+    okay = png_image_finish_read(&image, nullptr, icon->pixels.data(), 0, nullptr);
+  }
+  png_image_free(&image);
+  if (!okay) return nullptr;
+  auto &descriptor = icon->descriptor;
+  descriptor.header.magic = LV_IMAGE_HEADER_MAGIC;
+  descriptor.header.cf = LV_COLOR_FORMAT_ARGB8888;
+  descriptor.header.w = kIconPixels;
+  descriptor.header.h = kIconPixels;
+  descriptor.header.stride = kIconPixels * 4;
+  descriptor.data_size = icon->pixels.size();
+  descriptor.data = icon->pixels.data();
+  return icon;
+}
+
 std::vector<App> DiscoverApps(const std::atomic<bool> &cancel, int user_id,
                               bool metadata = true) {
+  appvault::IncrementalApkViews incremental;
+  std::vector<std::string> registered;
+  std::string incremental_error;
+  if (!appvault::RegisteredApkDirectories(registered, incremental_error) ||
+      !incremental.Prepare(registered, incremental_error))
+    fprintf(stderr, "App Backup Vault: %s\n", incremental_error.c_str());
   std::vector<App> apps;
   const std::string id = std::to_string(user_id);
   const std::vector<std::string> roots = {
@@ -603,6 +659,7 @@ std::string PackageFromBackupPath(std::string path, int user_id) {
   if (path[0] != '/') path.insert(path.begin(), '/');
   const std::string id = std::to_string(user_id);
   const std::vector<std::string> prefixes = {
+      std::string(appvault::kMetadataRoot) + "/" + id + "/",
       "/data/user/" + id + "/", "/data/user_de/" + id + "/",
       "/data/media/" + id + "/Android/data/",
       "/data/media/" + id + "/Android/obb/",
@@ -630,6 +687,81 @@ const App *InstalledApp(const State *state, const std::string &package) {
   const auto match = std::find_if(state->apps.begin(), state->apps.end(),
       [&](const App &app) { return app.package == package; });
   return match == state->apps.end() ? nullptr : &*match;
+}
+
+bool SaveAppDisplay(State *state, const std::vector<std::string> &folders, std::string &error) {
+  for (const auto &folder : folders) {
+    const std::string package = folder.substr(folder.find_last_of('/') + 1);
+    App discovered;
+    const App *app = InstalledApp(state, package);
+    if (!app) {
+      discovered.package = package;
+      discovered.name = FriendlyPackageName(package);
+      tinyxml2::XMLDocument registration;
+      if (registration.LoadFile((folder + "/registration.xml").c_str()) == tinyxml2::XML_SUCCESS) {
+        const auto *root = registration.RootElement();
+        const auto *node = root ? root->FirstChildElement("package") : nullptr;
+        if (node && node->Attribute("codePath")) {
+          discovered.apk = std::string(node->Attribute("codePath")) + "/base.apk";
+          ReadAppMetadata(discovered);
+        }
+      }
+      app = &discovered;
+    }
+    Json::Value display;
+    display["schema"] = 1;
+    display["package"] = package;
+    display["name"] = app->name;
+    display["icon"] = RemoteAppIcon(app);
+    Json::StreamWriterBuilder writer;
+    writer["indentation"] = "";
+    const std::string path = folder + "/display.json";
+    const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) { error = "Cannot save app display metadata."; return false; }
+    const bool okay = WriteAll(fd, Json::writeString(writer, display));
+    const int closed = close(fd);
+    if (!okay || closed) { error = "Cannot save app display metadata."; return false; }
+  }
+  return true;
+}
+
+void LoadAppDisplay(const std::string &path, SnapshotApp &app) {
+  const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) return;
+  struct stat info{};
+  if (fstat(fd, &info) || !S_ISREG(info.st_mode) || info.st_size <= 0 || info.st_size > 65536) {
+    close(fd); return;
+  }
+  std::string bytes(info.st_size, '\0');
+  size_t offset = 0;
+  while (offset < bytes.size()) {
+    const ssize_t count = read(fd, bytes.data() + offset, bytes.size() - offset);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) break;
+    offset += count;
+  }
+  close(fd);
+  if (offset != bytes.size()) return;
+  Json::CharReaderBuilder builder;
+  Json::Value display;
+  std::string error;
+  std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+  if (!reader->parse(bytes.data(), bytes.data() + bytes.size(), &display, &error) ||
+      !display.isObject() || display["schema"] != 1 ||
+      !display["package"].isString() || display["package"].asString() != app.package) return;
+  if (display["name"].isString()) {
+    const auto name = display["name"].asString();
+    if (!name.empty() && name.size() <= 1024 && name.find('\0') == std::string::npos)
+      app.name = name;
+  }
+  if (display["icon"].isString() && SavedIconEncoding(display["icon"].asString()))
+    app.icon_png = display["icon"].asString();
+}
+
+void DropSnapshotIcons(State *state) {
+  for (const auto &snapshot : state->snapshot_items)
+    for (const auto &app : snapshot.apps)
+      if (app.icon) lv_image_cache_drop(&app.icon->descriptor);
 }
 
 std::string SnapshotDate(const std::string &time) {
@@ -710,6 +842,38 @@ std::string UserTag(int user_id) {
   return "aera-user-" + std::to_string(user_id);
 }
 
+void LoadSnapshotDisplays(State *state) {
+  const std::string prefix = std::string(appvault::kMetadataRoot) + "/" +
+      std::to_string(state->user_id) + "/";
+  for (auto &snapshot : state->snapshot_items) {
+    if (state->cancel.load()) return;
+    std::vector<std::string> files;
+    for (const auto &app : snapshot.apps) {
+      const std::string folder = prefix + app.package;
+      if (std::find(app.paths.begin(), app.paths.end(), folder) != app.paths.end())
+        files.push_back(folder + "/display.json");
+    }
+    if (files.empty()) continue;
+    char staging[] = "/tmp/aera-appvault-display-XXXXXX";
+    if (!mkdtemp(staging)) continue;
+    std::vector<std::string> arguments = {"restore", snapshot.id,
+        "--tag", std::string(kTag) + "," + UserTag(state->user_id),
+        "--target", staging, "--exclude-xattr", "security.selinux"};
+    for (const auto &file : files) {
+      arguments.push_back("--include"); arguments.push_back(file);
+    }
+    std::string output;
+    if (!RunRestic(state, arguments, output)) {
+      for (auto &app : snapshot.apps)
+        LoadAppDisplay(std::string(staging) + prefix + app.package + "/display.json", app);
+      std::sort(snapshot.apps.begin(), snapshot.apps.end(),
+          [](const SnapshotApp &left, const SnapshotApp &right) { return left.name < right.name; });
+    }
+    std::error_code error;
+    std::filesystem::remove_all(staging, error);
+  }
+}
+
 void Worker(State *state, Work work, std::vector<std::string> paths,
             int user_id) {
   state->work = work;
@@ -727,7 +891,65 @@ void Worker(State *state, Work work, std::vector<std::string> paths,
   }
   std::string output;
   std::vector<std::string> arguments;
+  appvault::RestoreRegistration registration;
+  std::string registration_staging;
+  struct StagingCleanup {
+    std::string &path;
+    ~StagingCleanup() {
+      if (!path.empty()) {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+      }
+    }
+  } cleanup{registration_staging};
+  const auto fail = [&](const std::string &message) {
+    fprintf(stderr, "App Backup Vault operation failed: %s\n", message.c_str());
+    std::lock_guard<std::mutex> lock(state->result_mutex);
+    state->result = message;
+    state->work_success.store(false);
+    state->work_progress.store(0);
+    state->done.store(true, std::memory_order_release);
+  };
+  static std::mutex app_transfer_mutex;
+  std::unique_lock<std::mutex> app_transfer_lock(app_transfer_mutex, std::defer_lock);
+  if ((work == Work::kBackup || work == Work::kRestore) && !app_transfer_lock.try_lock()) {
+    fail("Another app backup or restore is already running.");
+    return;
+  }
+  appvault::IncrementalApkViews incremental;
+  if (work == Work::kBackup || work == Work::kRestore) {
+    std::vector<std::string> registered;
+    if (!appvault::RegisteredApkDirectories(registered, output)) {
+      fail(output); return;
+    }
+    registered.erase(std::remove_if(registered.begin(), registered.end(),
+        [&](const std::string &path) {
+          return std::find(paths.begin(), paths.end(), path) == paths.end();
+        }), registered.end());
+    if (!incremental.Prepare(registered, output)) {
+      fail(output); return;
+    }
+    output.clear();
+  }
+  const std::string metadata_prefix = std::string(appvault::kMetadataRoot) +
+      "/" + std::to_string(user_id) + "/";
   if (work == Work::kBackup) {
+    std::set<std::string> packages;
+    for (const auto &path : paths) {
+      const std::string package = PackageFromBackupPath(path, user_id);
+      if (!package.empty()) packages.insert(package);
+    }
+    std::vector<std::string> metadata_paths;
+    if (state->remote_progress)
+      state->remote_progress({0, "Saving Android app registration", {}, 0, 0, {}});
+    if (state->cancel.load() || !appvault::CaptureRegistration(
+            user_id, {packages.begin(), packages.end()}, metadata_paths, output)) {
+      fail(state->cancel.load() ? "App backup cancelled." : output);
+      return;
+    }
+    if (!SaveAppDisplay(state, metadata_paths, output)) { fail(output); return; }
+    output.clear();
+    paths.insert(paths.end(), metadata_paths.begin(), metadata_paths.end());
     if (access((state->repository + "/config").c_str(), R_OK) != 0) {
       if (!MakeDirectories(state->repository)) {
         std::lock_guard<std::mutex> lock(state->result_mutex);
@@ -750,14 +972,53 @@ void Worker(State *state, Work work, std::vector<std::string> paths,
     }
     arguments = {"backup", "--json", "--tag", kTag, "--tag",
                  UserTag(user_id), "--host", "aera-recovery"};
+    for (const auto &path : paths) {
+      if (path.compare(0, 10, "/data/app/") == 0) {
+        arguments.push_back("--exclude");
+        arguments.push_back(path + "/oat");
+      }
+    }
     arguments.insert(arguments.end(), paths.begin(), paths.end());
   } else if (work == Work::kRestore) {
+    std::vector<std::string> metadata_paths;
+    for (const auto &path : paths)
+      if (path.compare(0, metadata_prefix.size(), metadata_prefix) == 0)
+        metadata_paths.push_back(path);
+    if (metadata_paths.empty()) {
+      fail("This backup has no package registration; create a new backup first.");
+      return;
+    }
+    char temporary[] = "/tmp/aera-appvault-restore-XXXXXX";
+    if (!mkdtemp(temporary)) { fail("Could not create app restore staging folder."); return; }
+    registration_staging = temporary;
+    std::vector<std::string> inspect = {"restore", state->restore_snapshot,
+        "--tag", std::string(kTag) + "," + UserTag(user_id),
+        "--target", registration_staging, "--exclude-xattr", "security.selinux"};
+    for (const auto &path : metadata_paths) {
+      inspect.push_back("--include"); inspect.push_back(path);
+    }
+    if (state->remote_progress)
+      state->remote_progress({0, "Checking Android app registration", {}, 0, 0, {}});
+    if (RunRestic(state, inspect, output)) { fail(LastUsefulLine(output)); return; }
+    output.clear();
+    if (!registration.Prepare(user_id, paths, registration_staging, output)) {
+      fail(output); return;
+    }
+    output.clear();
     arguments = {"restore", state->restore_snapshot, "--json", "--tag",
                  std::string(kTag) + "," + UserTag(user_id), "--target", "/",
-                 "--exclude-xattr", "security.selinux"};
+                 "--exclude-xattr", "security.selinux", "--exclude-xattr", "user.incfs.*"};
+    bool includes_data = false;
     for (const auto &path : paths) {
+      if (path.compare(0, metadata_prefix.size(), metadata_prefix) == 0) continue;
+      if (path.compare(0, 10, "/data/app/") == 0 && appvault::IsIncrementalApk(path)) continue;
       arguments.push_back("--include");
       arguments.push_back(path);
+      includes_data = true;
+    }
+    if (!includes_data) {
+      fail("No writable app data was selected for restore.");
+      return;
     }
   } else {
     if (access((state->repository + "/config").c_str(), R_OK) != 0) {
@@ -775,8 +1036,21 @@ void Worker(State *state, Work work, std::vector<std::string> paths,
     arguments = {"snapshots", "--json", "--tag",
                  std::string(kTag) + "," + UserTag(user_id)};
   }
-  const int result = RunRestic(state, arguments, output);
-  if (!result && work == Work::kRefresh) ParseSnapshots(state, output);
+  int result = RunRestic(state, arguments, output);
+  if (!result && work == Work::kRestore) {
+    if (state->cancel.load()) { result = -1; output = "App restore cancelled."; }
+    else {
+      state->work_progress.store(99);
+      if (state->remote_progress)
+        state->remote_progress({99, "Registering restored apps in Android", {}, 0, 0, {}});
+      if (!registration.Finish(output)) result = -1;
+    }
+  }
+  if (result) fprintf(stderr, "App Backup Vault: %s\n", output.c_str());
+  if (!result && work == Work::kRefresh) {
+    ParseSnapshots(state, output);
+    LoadSnapshotDisplays(state);
+  }
   {
     std::lock_guard<std::mutex> lock(state->result_mutex);
     if (!result) {
@@ -941,6 +1215,7 @@ void StartDiscovery(State *state) {
   for (const auto &app : state->apps)
     if (app.icon) lv_image_cache_drop(&app.icon->descriptor);
   state->apps.clear();
+  DropSnapshotIcons(state);
   state->snapshot_items.clear();
   state->snapshots = 0;
   state->latest_id.clear();
@@ -993,6 +1268,7 @@ void StartWork(State *state, Work work) {
   }
   if (state->worker.joinable()) state->worker.join();
   state->work = work;
+  if (work == Work::kRefresh) DropSnapshotIcons(state);
   state->done.store(false);
   state->work_success.store(false);
   state->cancel.store(false);
@@ -1154,9 +1430,11 @@ void ShowSnapshotApps(State *state, size_t snapshot_index) {
     lv_obj_remove_flag(icon_plate, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(icon_plate, LV_OBJ_FLAG_SCROLLABLE);
     const App *installed = InstalledApp(state, saved.package);
-    if (installed && installed->icon) {
+    if (!saved.icon && !saved.icon_png.empty()) saved.icon = SavedAppIcon(saved.icon_png);
+    const auto *icon = saved.icon ? saved.icon.get() : installed ? installed->icon.get() : nullptr;
+    if (icon) {
       auto *image = lv_image_create(icon_plate);
-      lv_image_set_src(image, &installed->icon->descriptor);
+      lv_image_set_src(image, &icon->descriptor);
       lv_image_set_antialias(image, true);
       lv_obj_center(image);
       lv_obj_remove_flag(image, LV_OBJ_FLAG_CLICKABLE);
@@ -1392,6 +1670,7 @@ void Destroy(State *state) {
   if (state->list) lv_obj_clean(state->list);
   for (const auto &app : state->apps)
     if (app.icon) lv_image_cache_drop(&app.icon->descriptor);
+  DropSnapshotIcons(state);
   web::RemoveRuntime(state->runtime.empty() ? state->preparation.directory : state->runtime);
   delete state;
 }
@@ -1442,7 +1721,8 @@ bool RunAppVaultRemote(const JobRequest &request, Json::Value &result,
       item["bytes"] = Json::UInt64(snapshot.bytes);
       for (const auto &app : snapshot.apps) {
         Json::Value value; value["package"] = app.package; value["name"] = app.name;
-        value["icon"] = RemoteAppIcon(InstalledApp(&state, app.package));
+        value["icon"] = !app.icon_png.empty() ? app.icon_png :
+            RemoteAppIcon(InstalledApp(&state, app.package));
         item["apps"].append(value);
       }
       result["snapshots"].append(item);
