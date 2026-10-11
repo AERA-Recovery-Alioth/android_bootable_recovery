@@ -289,6 +289,14 @@ class PcConnectionTest(unittest.TestCase):
     def test_05c_root_and_reboot_are_confirmed_queued_jobs(self):
         self.command("run")
         self.assertEqual(self.request("/api/root", {"action": "patch", "provider": "next", "slot": "b"})[0], 400)
+        info = self.request("/api/status")[1]
+        if not info["root_enabled"]:
+            self.assertFalse(info["root_available"])
+            status, error = self.request("/api/root", {"action": "inspect", "provider": "next", "slot": "b", "confirm": True})
+            self.assertEqual(status, 409)
+            self.assertIn("disabled", error["error"])
+            return
+        self.assertTrue(info["root_available"])
         self.assertEqual(self.request("/api/root", {"action": "patch", "provider": "next", "slot": "bad", "confirm": True})[0], 400)
         status, job = self.request("/api/root", {"action": "inspect", "provider": "next", "slot": "b", "confirm": True})
         self.assertEqual((status, job["root_action"], job["root_slot"]), (200, "inspect", "b"))

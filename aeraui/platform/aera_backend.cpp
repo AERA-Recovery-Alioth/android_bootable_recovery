@@ -1295,6 +1295,7 @@ int RecoveryRunJob(const JobRequest &request) {
   if (request.job == Job::kInstall) return aeraui_install_package(request.path.c_str());
   if (request.job == Job::kPcBackupOperation) return RecoveryRunPcBackup(request);
   if (request.job == Job::kRootOperation) {
+    if (!root::Enabled()) return 1;
     root::Request operation;
     if (request.root_slot != "a" && request.root_slot != "b") return 1;
     operation.slot = request.root_slot;

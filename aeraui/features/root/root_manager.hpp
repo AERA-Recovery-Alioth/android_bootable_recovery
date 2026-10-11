@@ -10,6 +10,14 @@
 
 namespace aeraui::root {
 
+inline constexpr bool Enabled() {
+#if defined(AERA_ENABLE_ROOT_MANAGER) && AERA_ENABLE_ROOT_MANAGER == 1
+  return true;
+#else
+  return false;
+#endif
+}
+
 enum class Provider { kKernelSU, kKernelSUNext, kSukiSU };
 enum class Job {
   kRefreshRelease,

@@ -54,6 +54,7 @@ function renderPayloadProgress(job){
     (failed?' / '+failed+' failed':'')+(notFlashed?' / '+notFlashed+' not flashed':'');
 }
 function showTab(tab) {
+  if (tab === 'root' && document.querySelector('[data-tab="root"]').hidden) tab = 'install';
   if (workspace.tab !== tab && ['completed','failed','cancelled'].includes(state.job?.phase)) clearActivity();
   workspace.tab = tab;
   $('workspace').firstElementChild.hidden = tab !== 'install';
@@ -111,6 +112,8 @@ controls = function() {
 const originalUpdateInfo = updateInfo;
 updateInfo = function(info) {
   originalUpdateInfo(info);
+  document.querySelector('[data-tab="root"]').hidden = !info.root_enabled;
+  if (!info.root_enabled && workspace.tab === 'root') showTab('install');
   $('workspaceTabs').hidden = !state.connected;
   options($('fileStorage'),info.storages||[],s=>`${s.name} / ${size(s.free)} free`);
   const slotSignature = `${info.boot_slot}|${info.slot}`;

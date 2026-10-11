@@ -828,24 +828,15 @@ ifeq ($(OF_WORKAROUND_BACKUP_BUG),1)
      LOCAL_CFLAGS += -DOF_WORKAROUND_BACKUP_BUG
 endif
 
-# ksu and variants
-ifeq ($(AERA_ENABLE_KERNELSU_SUPPORT),1)
-    ifneq ($(AERA_VIRTUAL_AB_DEVICE),1)
-     $(error AERA_ENABLE_KERNELSU_SUPPORT is only valid for Virtual_AB devices with a GKI 5.x or 6.x kernel)
-    endif
-    LOCAL_CFLAGS += -DAERA_ENABLE_KERNELSU_SUPPORT
+LOCAL_CFLAGS += -DAERA_ENABLE_ROOT_MANAGER=$(if $(filter 1,$(AERA_ENABLE_ROOT_MANAGER)),1,0)
+
+# Pass the resolved flag after the vendor hook imports its cached environment.
+# This also supports BoardConfig values and overrides stale lunch exports.
+ifneq ($(strip $(AERA_VENDOR)),)
+ifndef AERA_ROOT_MANAGER_VENDOR_CONFIGURED
+AERA_ROOT_MANAGER_VENDOR_CONFIGURED := true
+AERA_VENDOR += AERA_ENABLE_ROOT_MANAGER="$(if $(filter 1,$(AERA_ENABLE_ROOT_MANAGER)),1,0)"
 endif
-ifeq ($(AERA_ENABLE_KERNELSU_NEXT_SUPPORT),1)
-    ifneq ($(AERA_VIRTUAL_AB_DEVICE),1)
-     $(error AERA_ENABLE_KERNELSU_NEXT_SUPPORT is only valid for Virtual_AB devices with a GKI 5.x or 6.x kernel)
-    endif
-    LOCAL_CFLAGS += -DAERA_ENABLE_KERNELSU_NEXT_SUPPORT
-endif
-ifeq ($(AERA_ENABLE_SUKISU_SUPPORT),1)
-    ifneq ($(AERA_VIRTUAL_AB_DEVICE),1)
-     $(error AERA_ENABLE_SUKISU_SUPPORT is only valid for Virtual_AB devices with a GKI 5.x or 6.x kernel)
-    endif
-    LOCAL_CFLAGS += -DAERA_ENABLE_SUKISU_SUPPORT
 endif
 
 # mask read errors on Get_Folder_Size?
@@ -925,26 +916,35 @@ endif
 
 endif
 
-# Offline Root Manager provider assets are part of AERA itself, not a device
-# tree. Every ARM64 recovery receives the same verified KMI catalog and payloads.
-ifeq ($(TARGET_ARCH),arm64)
+# Root Manager is one optional feature; all three providers travel together.
+AERA_ROOT_ASSETS_MODE := disabled
+ifeq ($(AERA_ENABLE_ROOT_MANAGER),1)
+  ifeq ($(TARGET_ARCH),arm64)
+    AERA_ROOT_ASSETS_MODE := enabled
     AERA_ROOT_ASSETS_DIR := $(commands_TWRP_local_path)/prebuilt/aera/root
     # mkbootfs intentionally skips directories whose basename is exactly
     # "root", even below another directory.  Use an AERA-specific basename so
     # the provider catalog and modules actually enter the recovery CPIO.
-    AERA_ROOT_ASSETS_OUT := $(TARGET_RECOVERY_ROOT_OUT)/system/etc/aera/root-providers
-    AERA_ROOT_ASSETS_STAMP := $(TARGET_RECOVERY_ROOT_OUT)/system/etc/aera/.root-providers.stamp
     AERA_ROOT_ASSET_FILES := $(shell find $(AERA_ROOT_ASSETS_DIR) -type f 2>/dev/null)
+  endif
+endif
+AERA_ROOT_ASSETS_OUT := $(TARGET_RECOVERY_ROOT_OUT)/system/etc/aera/root-providers
+AERA_ROOT_ASSETS_STAMP := $(TARGET_RECOVERY_ROOT_OUT)/system/etc/aera/.root-providers-$(AERA_ROOT_ASSETS_MODE).stamp
 
 ifndef AERA_ROOT_ASSETS_RULE_DEFINED
 AERA_ROOT_ASSETS_RULE_DEFINED := true
 
 $(AERA_ROOT_ASSETS_STAMP): $(AERA_ROOT_ASSET_FILES)
-	@echo "Packing AERA offline root providers"
-	@rm -rf $(AERA_ROOT_ASSETS_OUT) && mkdir -p $(AERA_ROOT_ASSETS_OUT) && cp -a $(AERA_ROOT_ASSETS_DIR)/. $(AERA_ROOT_ASSETS_OUT)/ && touch $@
+	@echo "AERA offline root providers: $(AERA_ROOT_ASSETS_MODE)"
+	@rm -rf $(AERA_ROOT_ASSETS_OUT)
+	@mkdir -p $(dir $@)
+ifeq ($(AERA_ROOT_ASSETS_MODE),enabled)
+	@mkdir -p $(AERA_ROOT_ASSETS_OUT) && cp -a $(AERA_ROOT_ASSETS_DIR)/. $(AERA_ROOT_ASSETS_OUT)/
+endif
+	@rm -f $(dir $@).root-providers*.stamp
+	@touch $@
 
 ALL_DEFAULT_INSTALLED_MODULES += $(AERA_ROOT_ASSETS_STAMP)
-endif
 endif
 
 # AERA Remote's authenticated browser client supports both USB forwarding and

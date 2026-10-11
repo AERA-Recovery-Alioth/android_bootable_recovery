@@ -1477,6 +1477,10 @@ const char *ProviderName(Provider provider) {
 
 Status Probe() {
   Status status;
+  if (!Enabled()) {
+    status.error = "Root Manager is disabled in this build.";
+    return status;
+  }
   status.ksud_available = access(kKsud, X_OK) == 0 && access(kMagiskboot, X_OK) == 0;
   utsname name{};
   if (uname(&name) == 0) status.kernel_release = name.release;
@@ -1742,6 +1746,10 @@ ManagerStatus InspectManager(Provider provider) {
 }
 
 bool Run(const Request &request, Progress &progress) {
+  if (!Enabled()) {
+    SetText(progress, "Root Manager is disabled in this build.");
+    return false;
+  }
   std::unique_lock<std::mutex> operation(gOperationMutex, std::try_to_lock);
   if (!operation.owns_lock()) {
     SetText(progress, "Root operation already running");

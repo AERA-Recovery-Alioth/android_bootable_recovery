@@ -1166,11 +1166,12 @@ void DataManager::SetDefaultValues()
 	mConst.SetValue("vendor_boot_recovery", "1");
 #endif
 
-#if defined(AERA_ENABLE_KERNELSU_SUPPORT) || defined(AERA_ENABLE_KERNELSU_NEXT_SUPPORT) || defined(AERA_ENABLE_SUKISU_SUPPORT)
-	TWFunc::Fox_Property_Set("aera.support_kernelsu", "true");
-	mConst.SetValue("fox_support_ksu", "1");
+#if AERA_ENABLE_ROOT_MANAGER == 1
+	TWFunc::Fox_Property_Set("ro.aera.root_manager.enabled", "1");
+	mConst.SetValue("aera_root_manager_enabled", "1");
 #else
-	mConst.SetValue("fox_support_ksu", "0");
+	TWFunc::Fox_Property_Set("ro.aera.root_manager.enabled", "0");
+	mConst.SetValue("aera_root_manager_enabled", "0");
 #endif
 
 #ifdef TW_INCLUDE_CRYPTO

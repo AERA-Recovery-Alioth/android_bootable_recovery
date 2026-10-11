@@ -1385,6 +1385,9 @@ void Handle(SSL *tls, unsigned generation) {
         g_reboot_target = target; g_reboot_at = Clock::now() + std::chrono::seconds(1);
         result["queued"] = target;
       } else {
+        if (!aeraui::root::Enabled()) {
+          Error(tls, 409, "Root Manager is disabled in this build."); return;
+        }
         const std::string action = body.get("action", "").asString();
         const std::string provider = body.get("provider", "").asString();
         const std::string slot = body.get("slot", "").asString();
@@ -1913,11 +1916,12 @@ void RefreshPlatformInfo() {
   info["uptime"] = ReadFile("/proc/uptime", 256);
   info["battery"] = Trim(ReadFile("/sys/class/power_supply/battery/capacity", 64));
   info["battery_status"] = Trim(ReadFile("/sys/class/power_supply/battery/status", 64));
-  info["root_available"] = access("/sbin/ksud", X_OK) == 0 && access("/sbin/magiskboot", X_OK) == 0 &&
+  info["root_enabled"] = aeraui::root::Enabled();
+  info["root_available"] = aeraui::root::Enabled() && access("/sbin/ksud", X_OK) == 0 && access("/sbin/magiskboot", X_OK) == 0 &&
       (access("/dev/block/by-name/init_boot_a", R_OK | W_OK) == 0 ||
        access("/dev/block/by-name/init_boot_b", R_OK | W_OK) == 0);
 #ifdef AERA_PC_HOST_TEST
-  info["root_available"] = true;  // The host fixture only simulates root jobs.
+  info["root_available"] = aeraui::root::Enabled();  // The host fixture only simulates root jobs.
 #endif
   info["storages"] = Json::Value(Json::arrayValue);
   std::set<std::string> roots;

@@ -37,6 +37,7 @@
 #include "scene.hpp"
 #include "ui_components.hpp"
 #include "update/update_manager.hpp"
+#include "root/root_manager.hpp"
 #include "../components/power_transition.hpp"
 #include "../components/phone_keyboard.hpp"
 #include "draw/opengles/lv_draw_opengles.h"
@@ -2715,6 +2716,7 @@ private:
     }
 
     if (action == Action::kRootManager) {
+      if (!root::Enabled()) return;
       self->TrackScene(action);
       self->on_home_ = false;
       self->current_tool_ = action;

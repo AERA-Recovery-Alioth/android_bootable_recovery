@@ -6,6 +6,7 @@
 #include "ui_components.hpp"
 #include "partition_layout.hpp"
 #include "wallpaper.hpp"
+#include "root/root_manager.hpp"
 #include "../../aera_remote/pc_connection.hpp"
 #include "src/misc/cache/instance/lv_image_cache.h"
 #include <cmath>
@@ -2691,8 +2692,10 @@ void BuildMenu(Tools *state) {
     {LV_SYMBOL_USB, "PC connection", "Transfer and install ZIPs and images from your computer", Action::kPcConnection},
     {"A", "About AERA", "Project identity, contributors and build information", Action::kAbout},
     {LV_SYMBOL_POWER, "Reboot", "Android, recovery, bootloader or power off", Action::kOpenReboot}}};
-  for (size_t i = 0; i < items.size(); ++i) {
-    const auto item = items[i];
+  size_t visible_index = 0;
+  for (const auto item : items) {
+    if (item.action == Action::kRootManager && !root::Enabled()) continue;
+    const size_t i = visible_index++;
     const bool reboot = item.action == Action::kOpenReboot;
     const bool about = item.action == Action::kAbout;
     const bool pinned = about || reboot;

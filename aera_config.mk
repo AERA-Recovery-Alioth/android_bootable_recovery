@@ -4,6 +4,8 @@
 # Public device configuration uses AERA_* exclusively. The recovery backend
 # still consumes its established internal variable names, so keep that detail
 # behind this translation layer instead of exposing it in device trees.
+AERA_ENABLE_ROOT_MANAGER ?= 0
+
 define aera-map-config
 ifneq ($$(origin AERA_$(1)),undefined)
 $(2) := $$(AERA_$(1))

@@ -30,8 +30,16 @@ func copyAeraFonts(ctx android.BaseContext) bool {
 	return true
 }
 
+func aeraRootManagerFlags(ctx android.BaseContext) []string {
+	rootManager := "0"
+	if getMakeVars(ctx, "AERA_ENABLE_ROOT_MANAGER") == "1" {
+		rootManager = "1"
+	}
+	return []string{"-DAERA_ENABLE_ROOT_MANAGER=" + rootManager}
+}
+
 func globalFlags(ctx android.BaseContext) []string {
-	var cflags []string
+	cflags := aeraRootManagerFlags(ctx)
 	if getMakeVars(ctx, "AB_OTA_UPDATER") == "true" {
 		cflags = append(cflags, "-DAB_OTA_UPDATER=1")
 	}
@@ -109,7 +117,7 @@ func aeraHostDefaultsFactory() android.Module {
 }
 
 func aeraUiDefaults(ctx android.BaseContext) []string {
-	return aeraUiLanguageFlags(ctx)
+	return append(aeraUiLanguageFlags(ctx), aeraRootManagerFlags(ctx)...)
 }
 
 func aeraUiDefaultsFactory() android.Module {
