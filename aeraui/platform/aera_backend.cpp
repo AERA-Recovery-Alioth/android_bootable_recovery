@@ -2133,6 +2133,12 @@ struct EarlyUiPreferences {
   int preserve_abl;
   int backup_checksums;
   int verify_backup_checksums;
+  int wifi_show_speed;
+  int wifi_show_name;
+  int wifi_speed_position;
+  int battery_style;
+  int battery_circle_size;
+  int battery_percentage;
 };
 
 bool gEarlyPreferencesAttempted = false;
@@ -2208,6 +2214,12 @@ EarlyUiPreferences DefaultEarlyUiPreferences() {
   preferences.preserve_abl = 0;
   preferences.backup_checksums = 1;
   preferences.verify_backup_checksums = 1;
+  preferences.wifi_show_speed = 1;
+  preferences.wifi_show_name = 1;
+  preferences.wifi_speed_position = 100;
+  preferences.battery_style = 0;
+  preferences.battery_circle_size = kBatteryCircleSizeDefault;
+  preferences.battery_percentage = 1;
   return preferences;
 }
 
@@ -2265,6 +2277,16 @@ EarlyUiPreferences CaptureCurrentEarlyUiPreferences() {
       DataManager::GetIntValue(AERA_PRESERVE_ABL_VAR) != 0 ? 1 : 0;
   preferences.backup_checksums = DataManager::GetIntValue(TW_SKIP_DIGEST_GENERATE_VAR) == 0 ? 1 : 0;
   preferences.verify_backup_checksums = DataManager::GetStrValue("aera_verify_backup_checksums") != "0" ? 1 : 0;
+  preferences.wifi_show_speed = DataManager::GetStrValue("aera_wifi_show_speed") != "0" ? 1 : 0;
+  preferences.wifi_show_name = DataManager::GetStrValue("aera_wifi_show_name") != "0" ? 1 : 0;
+  const std::string speed_position = DataManager::GetStrValue("aera_wifi_speed_position");
+  preferences.wifi_speed_position = 100;
+  ParseInteger(speed_position, 0, 100, &preferences.wifi_speed_position);
+  preferences.battery_style = DataManager::GetIntValue("aera_battery_style") == 1 ? 1 : 0;
+  preferences.battery_circle_size = kBatteryCircleSizeDefault;
+  ParseInteger(DataManager::GetStrValue("aera_battery_circle_size"), kBatteryCircleSizeMin,
+               kBatteryCircleSizeMax, &preferences.battery_circle_size);
+  preferences.battery_percentage = DataManager::GetStrValue("aera_battery_percentage") != "0" ? 1 : 0;
   return preferences;
 }
 
@@ -2309,6 +2331,9 @@ bool ResetAeraSettings(bool theme) {
     set("aera_ui_font", std::string());
   } else {
     set("tw_military_time", defaults.clock24);
+    set("aera_battery_style", defaults.battery_style);
+    set("aera_battery_circle_size", defaults.battery_circle_size);
+    set("aera_battery_percentage", defaults.battery_percentage);
     set(TW_TIME_ZONE_VAR, defaults.timezone);
     set("aera_recents_enabled", defaults.recents);
     set("tw_hidden_files", 0);
@@ -2409,6 +2434,24 @@ bool SetEarlyUiValue(EarlyUiPreferences* preferences, const std::string& key,
   } else if (key == "verify_backup_checksums") {
     if (!ParseInteger(value, 0, 1, &parsed)) return false;
     preferences->verify_backup_checksums = parsed;
+  } else if (key == "wifi_show_speed") {
+    if (!ParseInteger(value, 0, 1, &parsed)) return false;
+    preferences->wifi_show_speed = parsed;
+  } else if (key == "wifi_show_name") {
+    if (!ParseInteger(value, 0, 1, &parsed)) return false;
+    preferences->wifi_show_name = parsed;
+  } else if (key == "wifi_speed_position") {
+    if (!ParseInteger(value, 0, 100, &parsed)) return false;
+    preferences->wifi_speed_position = parsed;
+  } else if (key == "battery_style") {
+    if (!ParseInteger(value, 0, 1, &parsed)) return false;
+    preferences->battery_style = parsed;
+  } else if (key == "battery_circle_size") {
+    if (!ParseInteger(value, kBatteryCircleSizeMin, kBatteryCircleSizeMax, &parsed)) return false;
+    preferences->battery_circle_size = parsed;
+  } else if (key == "battery_percentage") {
+    if (!ParseInteger(value, 0, 1, &parsed)) return false;
+    preferences->battery_percentage = parsed;
   } else {
     if (recognized != nullptr) *recognized = false;
     return false;
@@ -2448,6 +2491,12 @@ void ApplyEarlyUiPreferences(const EarlyUiPreferences& preferences) {
   DataManager::SetValue(TW_SKIP_DIGEST_GENERATE_VAR, preferences.backup_checksums ? 0 : 1);
   DataManager::SetValue("aera_verify_backup_checksums", preferences.verify_backup_checksums);
   DataManager::SetValue(TW_SKIP_DIGEST_CHECK_VAR, preferences.verify_backup_checksums);
+  DataManager::SetValue("aera_wifi_show_speed", preferences.wifi_show_speed);
+  DataManager::SetValue("aera_wifi_show_name", preferences.wifi_show_name);
+  DataManager::SetValue("aera_wifi_speed_position", preferences.wifi_speed_position);
+  DataManager::SetValue("aera_battery_style", preferences.battery_style);
+  DataManager::SetValue("aera_battery_circle_size", preferences.battery_circle_size);
+  DataManager::SetValue("aera_battery_percentage", preferences.battery_percentage);
 }
 
 void ApplyEarlyUiSideEffects() {
@@ -2519,7 +2568,13 @@ std::string SerializeEarlyUiPreferences(const EarlyUiPreferences& preferences) {
          << "preserve_recovery=" << preferences.preserve_recovery << '\n'
          << "preserve_abl=" << preferences.preserve_abl << '\n'
          << "backup_checksums=" << preferences.backup_checksums << '\n'
-         << "verify_backup_checksums=" << preferences.verify_backup_checksums << '\n';
+         << "verify_backup_checksums=" << preferences.verify_backup_checksums << '\n'
+         << "wifi_show_speed=" << preferences.wifi_show_speed << '\n'
+         << "wifi_show_name=" << preferences.wifi_show_name << '\n'
+         << "wifi_speed_position=" << preferences.wifi_speed_position << '\n'
+         << "battery_style=" << preferences.battery_style << '\n'
+         << "battery_circle_size=" << preferences.battery_circle_size << '\n'
+         << "battery_percentage=" << preferences.battery_percentage << '\n';
   return output.str();
 }
 
@@ -2694,7 +2749,13 @@ bool SaveAeraPreferences(bool require_early) {
          << "haptic_action=" << DataManager::GetIntValue("tw_action_vibrate") << '\n'
          << "wifi_auto_enable=" << DataManager::GetIntValue("of_wlan_auto_enable") << '\n'
          << "wifi_auto_connect=" << DataManager::GetIntValue("of_wlan_auto_connect") << '\n'
-         << "wifi_last_ssid=" << DataManager::GetStrValue("of_wlan_last_ssid") << '\n';
+         << "wifi_last_ssid=" << DataManager::GetStrValue("of_wlan_last_ssid") << '\n'
+         << "wifi_show_speed=" << (DataManager::GetStrValue("aera_wifi_show_speed") != "0" ? 1 : 0) << '\n'
+         << "wifi_show_name=" << (DataManager::GetStrValue("aera_wifi_show_name") != "0" ? 1 : 0) << '\n'
+         << "wifi_speed_position=" << RecoveryWifiStatusDisplay().speed_position << '\n'
+         << "battery_style=" << static_cast<int>(RecoveryBatteryStyle()) << '\n'
+         << "battery_circle_size=" << RecoveryBatteryCircleSize() << '\n'
+         << "battery_percentage=" << (RecoveryBatteryPercentage() ? 1 : 0) << '\n';
   if (!WriteFileAtomically(kAeraPreferencesPath, output.str())) return false;
   const bool early_saved = SaveEarlyUiPreferences();
   if (!early_saved)
@@ -2780,8 +2841,91 @@ WifiConnection RecoveryWifiConnection() {
 #ifdef OF_ENABLE_WLAN
   connection.connected = DataManager::GetIntValue("tw_wlan_connected") == 1;
   connection.ssid = DataManager::GetStrValue("wlan_connected_name");
+  ParseInteger(DataManager::GetStrValue("aera_wlan_rssi"), -127, -1, &connection.signal_dbm);
 #endif
   return connection;
+}
+
+WifiTraffic RecoveryWifiTraffic() {
+  WifiTraffic traffic;
+#ifdef OF_ENABLE_WLAN
+  if (DataManager::GetIntValue("tw_wlan_connected") != 1) return traffic;
+  traffic.interface = DataManager::GetStrValue("tw_wlan_iface");
+  if (traffic.interface.empty()) traffic.interface = "wlan0";
+  if (traffic.interface.find_first_not_of(
+          "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.") != std::string::npos ||
+      traffic.interface == "." || traffic.interface == "..") return traffic;
+  const std::string directory = "/sys/class/net/" + traffic.interface;
+  std::ifstream received(directory + "/statistics/rx_bytes");
+  std::ifstream sent(directory + "/statistics/tx_bytes");
+  std::ifstream index(directory + "/ifindex");
+  traffic.valid = bool(received >> traffic.received_bytes) &&
+      bool(sent >> traffic.sent_bytes) && bool(index >> traffic.interface_index);
+#endif
+  return traffic;
+}
+
+WifiStatusDisplay RecoveryWifiStatusDisplay() {
+  LoadAeraPreferencesIfAvailable();
+  WifiStatusDisplay display;
+  display.show_speed = DataManager::GetStrValue("aera_wifi_show_speed") != "0";
+  display.show_name = DataManager::GetStrValue("aera_wifi_show_name") != "0";
+  ParseInteger(DataManager::GetStrValue("aera_wifi_speed_position"), 0, 100,
+               &display.speed_position);
+  return display;
+}
+
+bool RecoverySetWifiStatusDisplay(const WifiStatusDisplay &display, bool save) {
+  const auto previous = RecoveryWifiStatusDisplay();
+  auto apply = [](const WifiStatusDisplay &value) {
+    return DataManager::SetValue("aera_wifi_show_speed", value.show_speed ? 1 : 0) == 0 &&
+        DataManager::SetValue("aera_wifi_show_name", value.show_name ? 1 : 0) == 0 &&
+        DataManager::SetValue("aera_wifi_speed_position", std::clamp(value.speed_position, 0, 100)) == 0;
+  };
+  if (apply(display) && (!save || SaveAeraPreferences())) return true;
+  apply(previous);
+  return false;
+}
+
+BatteryStyle RecoveryBatteryStyle() {
+  LoadAeraPreferencesIfAvailable();
+  return DataManager::GetIntValue("aera_battery_style") == 1 ? BatteryStyle::kCircle : BatteryStyle::kClassic;
+}
+
+bool RecoverySetBatteryStyle(BatteryStyle style) {
+  const auto previous = RecoveryBatteryStyle();
+  if (style != BatteryStyle::kClassic && style != BatteryStyle::kCircle) return false;
+  if (DataManager::SetValue("aera_battery_style", static_cast<int>(style)) == 0 && SaveAeraPreferences()) return true;
+  DataManager::SetValue("aera_battery_style", static_cast<int>(previous));
+  return false;
+}
+
+int RecoveryBatteryCircleSize() {
+  LoadAeraPreferencesIfAvailable();
+  int size = kBatteryCircleSizeDefault;
+  ParseInteger(DataManager::GetStrValue("aera_battery_circle_size"), kBatteryCircleSizeMin,
+               kBatteryCircleSizeMax, &size);
+  return size;
+}
+
+bool RecoverySetBatteryCircleSize(int size, bool save) {
+  const int previous = RecoveryBatteryCircleSize();
+  size = std::clamp(size, kBatteryCircleSizeMin, kBatteryCircleSizeMax);
+  if (DataManager::SetValue("aera_battery_circle_size", size) == 0 && (!save || SaveAeraPreferences())) return true;
+  DataManager::SetValue("aera_battery_circle_size", previous);
+  return false;
+}
+
+bool RecoveryBatteryPercentage() {
+  LoadAeraPreferencesIfAvailable();
+  return DataManager::GetStrValue("aera_battery_percentage") != "0";
+}
+
+bool RecoverySetBatteryPercentage(bool show) {
+  const bool previous = RecoveryBatteryPercentage();
+  if (DataManager::SetValue("aera_battery_percentage", show ? 1 : 0) == 0 && SaveAeraPreferences()) return true;
+  DataManager::SetValue("aera_battery_percentage", previous ? 1 : 0);
+  return false;
 }
 
 WifiStatus RecoveryWifiStatus() {

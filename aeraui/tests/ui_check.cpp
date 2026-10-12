@@ -55,6 +55,10 @@ static DockLayout dock_layout = DockLayout::kGlass;
 static std::string active_slot = "A";
 static bool wifi_auto_enable = false;
 static bool wifi_auto_connect = false;
+static WifiStatusDisplay wifi_display;
+static BatteryStyle battery_style = BatteryStyle::kClassic;
+static int battery_circle_size = kBatteryCircleSizeDefault;
+static bool battery_percentage = true;
 static bool adb_over_wifi = false;
 static bool adb_pairing = false;
 static std::vector<plugins::Plugin> home_plugins;
@@ -196,6 +200,7 @@ void AttachStatusBar(lv_obj_t *screen, void (*)(Action,void*),void*,StatusBarAct
 }
 int32_t StatusBarHeight() { return 165; }
 bool StatusBarShadeOpen() { return false; }
+void RefreshStatusBars() {}
 std::vector<Volume> RecoveryVolumes(const std::string &kind) {
   if (kind == "wipe") return {{"Dalvik / ART cache","DALVIK",0},{"Data","/data",23000000000},
     {"Internal storage","INTERNAL",12000000000},{"Metadata","/metadata",40960000}};
@@ -286,6 +291,30 @@ bool RecoveryWifiAutoEnable() { return wifi_auto_enable; }
 bool RecoveryWifiAutoConnect() { return wifi_auto_connect; }
 bool RecoverySetWifiAutoEnable(bool enabled) { wifi_auto_enable = enabled; return true; }
 bool RecoverySetWifiAutoConnect(bool enabled) { wifi_auto_connect = enabled; return true; }
+WifiStatusDisplay RecoveryWifiStatusDisplay() { return wifi_display; }
+bool RecoverySetWifiStatusDisplay(const WifiStatusDisplay &display, bool save) {
+  if (save && !save_succeeds) return false;
+  wifi_display = display;
+  return true;
+}
+BatteryStyle RecoveryBatteryStyle() { return battery_style; }
+int RecoveryBatteryCircleSize() { return battery_circle_size; }
+bool RecoverySetBatteryCircleSize(int size, bool save) {
+  if (save && !save_succeeds) return false;
+  battery_circle_size = std::clamp(size, kBatteryCircleSizeMin, kBatteryCircleSizeMax);
+  return true;
+}
+bool RecoveryBatteryPercentage() { return battery_percentage; }
+bool RecoverySetBatteryPercentage(bool show) {
+  if (!save_succeeds) return false;
+  battery_percentage = show;
+  return true;
+}
+bool RecoverySetBatteryStyle(BatteryStyle style) {
+  if (!save_succeeds) return false;
+  battery_style = style;
+  return true;
+}
 bool RecoveryAdbOverWifi() { return adb_over_wifi; }
 bool RecoverySetAdbOverWifi(bool enabled) { adb_over_wifi = enabled; return true; }
 AdbWifiStatus RecoveryAdbWifiStatus() {
@@ -499,6 +528,110 @@ int main(int argc,char **argv) {
     assert(png_image_write_to_file(&image,path,0,frame.data(),0,nullptr));
   };
   auto *screen=lv_screen_active();
+  if (!strcmp(argv[1], "--status-bar-settings")) {
+    for (const char *language : {"en", "de_DE"}) {
+      assert(i18n::SetLanguage(language));
+      for (int size = 0; size < 4; ++size) {
+        interface_size = static_cast<InterfaceSize>(size);
+        design::ApplyInterfaceSize(size);
+        wifi_display = {};
+        battery_style = BatteryStyle::kClassic;
+        battery_circle_size = kBatteryCircleSizeDefault;
+        battery_percentage = true;
+        auto *prefs = lv_obj_create(nullptr);
+        BuildToolScene(prefs, Action::kPreferences, RecordAction, nullptr);
+        lv_screen_load(prefs); Tick();
+        auto *entry = FindPreferenceEntry(prefs, i18n::Translate("Status bar")); assert(entry);
+        lv_obj_send_event(entry, LV_EVENT_CLICKED, nullptr);
+        assert(last_action == Action::kStatusBar);
+        lv_screen_load(screen); lv_obj_delete(prefs);
+        auto *page = lv_obj_create(nullptr);
+        BuildToolScene(page, Action::kStatusBar, RecordAction, nullptr);
+        lv_screen_load(page); Tick();
+        auto *circle = Find(page, i18n::Translate("Circle")); assert(circle);
+        auto *classic = Find(page, i18n::Translate("Classic")); assert(classic);
+        lv_obj_send_event(circle, LV_EVENT_CLICKED, nullptr);
+        assert(battery_style == BatteryStyle::kCircle);
+        auto *size_title = FindLabel(page, i18n::Translate("Circle size")); assert(size_title);
+        auto *size_panel = lv_obj_get_parent(lv_obj_get_parent(size_title));
+        auto *size_slider = FindType(size_panel, &lv_slider_class); assert(size_slider);
+        auto *percentage_text = Find(page, i18n::Translate("Battery percentage")); assert(percentage_text);
+        auto *percentage_row = lv_obj_get_parent(percentage_text);
+        assert(!lv_obj_has_flag(size_panel, LV_OBJ_FLAG_HIDDEN));
+        assert(lv_obj_has_flag(percentage_row, LV_OBJ_FLAG_HIDDEN));
+        lv_slider_set_value(size_slider, 53, LV_ANIM_OFF);
+        lv_obj_send_event(size_slider, LV_EVENT_VALUE_CHANGED, nullptr);
+        assert(battery_circle_size == 53);
+        lv_obj_send_event(size_slider, LV_EVENT_RELEASED, nullptr);
+        save_succeeds = false;
+        lv_slider_set_value(size_slider, 70, LV_ANIM_OFF);
+        lv_obj_send_event(size_slider, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_send_event(size_slider, LV_EVENT_RELEASED, nullptr);
+        assert(battery_circle_size == 53 && lv_slider_get_value(size_slider) == 53);
+        save_succeeds = true;
+        lv_slider_set_value(size_slider, 90, LV_ANIM_OFF);
+        lv_obj_send_event(size_slider, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_send_event(size_slider, LV_EVENT_PRESS_LOST, nullptr);
+        assert(battery_circle_size == 53);
+        for (int circle_size : {kBatteryCircleSizeMin, kBatteryCircleSizeMax, kBatteryCircleSizeDefault}) {
+          lv_slider_set_value(size_slider, circle_size, LV_ANIM_OFF);
+          lv_obj_send_event(size_slider, LV_EVENT_VALUE_CHANGED, nullptr);
+          lv_obj_send_event(size_slider, LV_EVENT_RELEASED, nullptr);
+          assert(battery_circle_size == circle_size);
+        }
+        lv_obj_send_event(classic, LV_EVENT_CLICKED, nullptr);
+        assert(battery_style == BatteryStyle::kClassic);
+        assert(lv_obj_has_flag(size_panel, LV_OBJ_FLAG_HIDDEN));
+        assert(!lv_obj_has_flag(percentage_row, LV_OBJ_FLAG_HIDDEN));
+        lv_obj_send_event(percentage_row, LV_EVENT_CLICKED, nullptr);
+        assert(!battery_percentage);
+        lv_obj_send_event(percentage_row, LV_EVENT_CLICKED, nullptr);
+        assert(battery_percentage);
+        auto *speed_text = Find(page, i18n::Translate("Network speed")); assert(speed_text);
+        auto *speed = lv_obj_get_parent(speed_text);
+        auto *position_title = FindLabel(page, i18n::Translate("Speed position")); assert(position_title);
+        auto *position = lv_obj_get_parent(lv_obj_get_parent(position_title));
+        auto *slider = FindType(position, &lv_slider_class); assert(slider);
+        lv_obj_send_event(speed, LV_EVENT_CLICKED, nullptr);
+        assert(!wifi_display.show_speed && lv_obj_has_flag(position, LV_OBJ_FLAG_HIDDEN));
+        lv_obj_send_event(speed, LV_EVENT_CLICKED, nullptr);
+        assert(wifi_display.show_speed && !lv_obj_has_flag(position, LV_OBJ_FLAG_HIDDEN));
+        lv_slider_set_value(slider, 25, LV_ANIM_OFF);
+        lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, nullptr);
+        assert(wifi_display.speed_position == 25);
+        lv_obj_send_event(slider, LV_EVENT_RELEASED, nullptr);
+        auto *name_text = Find(page, i18n::Translate("Show network name")); assert(name_text);
+        auto *name = lv_obj_get_parent(name_text);
+        lv_obj_send_event(name, LV_EVENT_CLICKED, nullptr);
+        assert(!wifi_display.show_name);
+        lv_obj_send_event(name, LV_EVENT_CLICKED, nullptr);
+        assert(wifi_display.show_name);
+        save_succeeds = false;
+        lv_slider_set_value(slider, 50, LV_ANIM_OFF);
+        lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_send_event(slider, LV_EVENT_RELEASED, nullptr);
+        assert(wifi_display.speed_position == 25 && lv_slider_get_value(slider) == 25);
+        save_succeeds = true;
+        lv_slider_set_value(slider, 100, LV_ANIM_OFF);
+        lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_send_event(slider, LV_EVENT_RELEASED, nullptr);
+        Tick();
+        AssertContained(FindLabel(page, i18n::Translate("Circle")), circle);
+        AssertContained(FindLabel(page, i18n::Translate("Classic")), classic);
+        AssertContained(position_title, lv_obj_get_parent(position_title));
+        assert(!Overlaps(circle, classic));
+        lv_obj_send_event(circle, LV_EVENT_CLICKED, nullptr);
+        Tick();
+        if (size == 1 && !strcmp(language, "en")) save("/tmp/aera-status-settings-en.png");
+        if (size == 2 && !strcmp(language, "de_DE")) save("/tmp/aera-status-settings-de.png");
+        lv_screen_load(screen); lv_obj_delete(page);
+      }
+    }
+    lv_deinit();
+    std::filesystem::remove_all(backup_root);
+    puts("Preferences status-bar page, battery previews, switches, positioning and save errors passed");
+    return 0;
+  }
   if (!strcmp(argv[1], "--pc-upload-progress")) {
     widgets::PcTransferBanner banner;
     aera::pc::UploadProgress progress;

@@ -279,6 +279,7 @@ target_compile_definitions(status_gesture_test PRIVATE AERA_DEFAULT_LANGUAGE="en
 target_compile_options(status_gesture_test PRIVATE -UNDEBUG)
 target_link_libraries(status_gesture_test PRIVATE lvgl PNG::PNG Threads::Threads jsoncpp_static ZLIB::ZLIB)
 add_test(NAME status_gesture_cancellation COMMAND status_gesture_test)
+add_test(NAME status_bar_display_settings COMMAND ui_check --status-bar-settings)
 
 find_program(AERA_NODE_EXECUTABLE node)
 if(AERA_NODE_EXECUTABLE)

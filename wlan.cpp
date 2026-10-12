@@ -978,6 +978,24 @@ bool Wlan::InfoLocked()
     DataManager::SetValue("wlan_info_state", wpa_state);
 
     if (wpa_state == "COMPLETED" && !ssid.empty() && !ip_addr.empty()) {
+        // The WLAN worker refreshes RSSI; status-bar rendering only reads it.
+        std::string signal;
+        int rssi = -999;
+        if (SuppCmd("SIGNAL_POLL", signal)) {
+            std::istringstream lines(signal);
+            std::string line;
+            while (std::getline(lines, line)) {
+                if (line.compare(0, 5, "RSSI=") != 0) continue;
+                const std::string value = Trim(line.substr(5));
+                char *end = nullptr;
+                errno = 0;
+                const long parsed = strtol(value.c_str(), &end, 10);
+                if (errno == 0 && end != value.c_str() && *end == '\0' && parsed >= -127 && parsed < 0)
+                    rssi = static_cast<int>(parsed);
+                break;
+            }
+        }
+        DataManager::SetValue("aera_wlan_rssi", rssi);
         DataManager::SetValue("wlan_info_connected", "1");
         DataManager::SetValue("wlan_info_ssid", ssid);
         DataManager::SetValue("wlan_info_ip", ip_addr);
@@ -993,6 +1011,7 @@ bool Wlan::InfoLocked()
      * Only clear connected UI state after a valid status response that says
      * WLAN is not actually completed/connected.
      */
+    DataManager::SetValue("aera_wlan_rssi", -999);
     DataManager::SetValue("wlan_info_connected", "0");
     DataManager::SetValue("wlan_info_ssid", "");
     DataManager::SetValue("wlan_info_ip", "");

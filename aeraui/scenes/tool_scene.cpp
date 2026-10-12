@@ -4,6 +4,7 @@
 #include "phone_keyboard.hpp"
 #include "picture_decode.hpp"
 #include "ui_components.hpp"
+#include "circle_battery.hpp"
 #include "partition_layout.hpp"
 #include "wallpaper.hpp"
 #include "root/root_manager.hpp"
@@ -38,6 +39,17 @@ struct Tools {
   lv_obj_t *pc_switch = nullptr, *pc_address = nullptr;
   lv_obj_t *pc_certificate = nullptr, *pc_details = nullptr, *pc_forget = nullptr;
   std::string pc_signature;
+  lv_obj_t *status_position = nullptr, *status_position_slider = nullptr;
+  lv_obj_t *status_position_amount = nullptr;
+  lv_obj_t *battery_choices[2]{};
+  lv_obj_t *battery_checks[2]{};
+  int status_saved_position = 100;
+  lv_obj_t *battery_size_panel = nullptr, *battery_size_slider = nullptr, *battery_size_amount = nullptr;
+  lv_obj_t *battery_percentage_row = nullptr;
+  widgets::CircleBattery battery_preview_circle;
+  lv_obj_t *battery_preview_classic = nullptr, *battery_preview_percentage = nullptr;
+  lv_obj_t *battery_preview_body = nullptr, *battery_preview_tip = nullptr;
+  int battery_saved_size = kBatteryCircleSizeDefault;
 };
 
 lv_obj_t *WorkflowModeCard(lv_obj_t *parent, int x, int y, int width,
@@ -2289,6 +2301,10 @@ void BuildPreferences(Tools *state) {
     }
   PreferenceEntry(state, LV_SYMBOL_KEYBOARD, "Language", language_name,
                   [state] { Open(state, Action::kLanguage); });
+  const std::string status_detail = std::string(i18n::Translate("Battery style")) +
+      " / " + i18n::Translate("Network speed");
+  PreferenceEntry(state, LV_SYMBOL_BATTERY_FULL, "Status bar", status_detail,
+                  [state] { Open(state, Action::kStatusBar); });
 
   auto *brightness = lv_obj_create(state->list);
   Clear(brightness);
@@ -2467,6 +2483,269 @@ void BuildPreferences(Tools *state) {
   });
   lv_obj_set_width(reset, LV_PCT(100));
   lv_obj_set_height(reset, 124);
+}
+
+void RefreshStatusPosition(Tools *state) {
+  const auto display = RecoveryWifiStatusDisplay();
+  if (display.show_speed) lv_obj_remove_flag(state->status_position, LV_OBJ_FLAG_HIDDEN);
+  else lv_obj_add_flag(state->status_position, LV_OBJ_FLAG_HIDDEN);
+  lv_slider_set_value(state->status_position_slider, display.speed_position, LV_ANIM_OFF);
+  lv_label_set_text(state->status_position_amount, (std::to_string(display.speed_position) + "%").c_str());
+}
+
+void RefreshBatterySettings(Tools *state) {
+  const bool circle = RecoveryBatteryStyle() == BatteryStyle::kCircle;
+  if (circle) {
+    lv_obj_remove_flag(state->battery_size_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(state->battery_percentage_row, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(state->battery_size_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(state->battery_percentage_row, LV_OBJ_FLAG_HIDDEN);
+  }
+  const int size = RecoveryBatteryCircleSize();
+  lv_slider_set_value(state->battery_size_slider, size, LV_ANIM_OFF);
+  lv_label_set_text(state->battery_size_amount, (std::to_string(size * 100 / kBatteryCircleSizeDefault) + "%").c_str());
+  ResizeCircleBattery(state->battery_preview_circle, size);
+  UpdateCircleBattery(state->battery_preview_circle, 76, false);
+  lv_obj_align(state->battery_preview_circle.root, LV_ALIGN_TOP_MID, 0, 28 + (80 - size) / 2);
+  const bool percentage = RecoveryBatteryPercentage();
+  if (percentage) lv_obj_remove_flag(state->battery_preview_percentage, LV_OBJ_FLAG_HIDDEN);
+  else lv_obj_add_flag(state->battery_preview_percentage, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_width(state->battery_preview_classic, percentage ? 188 : 80);
+  lv_obj_set_x(state->battery_preview_body, percentage ? 100 : 0);
+  lv_obj_set_x(state->battery_preview_tip, percentage ? 171 : 71);
+}
+
+void BuildStatusBarSettings(Tools *state) {
+  Header(state->screen, "Status bar", "", state->callback, state->context);
+  const int top = Landscape(state->screen) ? 340 : 452;
+  state->list = Scroll(state->screen, top,
+      std::max(1, int(lv_obj_get_height(state->screen)) - top - NavigationHeight(state->screen) - 28));
+  lv_obj_set_flex_flow(state->list, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(state->list, 16, 0);
+  lv_obj_set_style_pad_bottom(state->list, 32, 0);
+  PreferenceSection(state, "Battery style");
+  auto *choices = lv_obj_create(state->list);
+  Clear(choices);
+  lv_obj_set_size(choices, LV_PCT(100), 248);
+  lv_obj_set_flex_flow(choices, LV_FLEX_FLOW_ROW);
+  lv_obj_set_style_pad_column(choices, 24, 0);
+  const auto current_style = RecoveryBatteryStyle();
+  for (int i = 0; i < 2; ++i) {
+    auto *card = Button(choices, "", {}, current_style == static_cast<BatteryStyle>(i));
+    state->battery_choices[i] = card;
+    Panel(card, 28, kMainPanel);
+    Interactive(card, kMainSelected);
+    lv_obj_set_size(card, 1, 248);
+    lv_obj_set_flex_grow(card, 1);
+    lv_obj_set_style_pad_all(card, 0, 0);
+    const bool selected = current_style == static_cast<BatteryStyle>(i);
+    lv_obj_set_style_border_width(card, selected ? 3 : 1, 0);
+    lv_obj_set_style_border_color(card, selected ? kAccent : kMainLine, 0);
+    auto *name = Label(card, i == 0 ? "Classic" : "Circle", &lv_font_montserrat_32, kText);
+    lv_obj_set_width(name, LV_PCT(86));
+    lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 150);
+    auto *check = Label(card, LV_SYMBOL_OK, &lv_font_montserrat_24, kAccent);
+    state->battery_checks[i] = check;
+    lv_obj_align(check, LV_ALIGN_TOP_RIGHT, -24, 22);
+    if (!selected) lv_obj_add_flag(check, LV_OBJ_FLAG_HIDDEN);
+    if (i == 1) {
+      const auto preview = CreateCircleBattery(card);
+      state->battery_preview_circle = preview;
+      UpdateCircleBattery(preview, 76, false);
+      lv_obj_align(preview.root, LV_ALIGN_TOP_MID, 0, 28);
+    } else {
+      auto *preview = lv_obj_create(card);
+      state->battery_preview_classic = preview;
+      Clear(preview);
+      lv_obj_set_size(preview, 188, 80);
+      lv_obj_align(preview, LV_ALIGN_TOP_MID, 0, 28);
+      auto *number = Label(preview, "76%", &lv_font_montserrat_32, kMutedStrong);
+      state->battery_preview_percentage = number;
+      lv_obj_set_pos(number, 0, 22);
+      auto *body = lv_obj_create(preview);
+      state->battery_preview_body = body;
+      Clear(body);
+      lv_obj_set_pos(body, 100, 22);
+      lv_obj_set_size(body, 68, 36);
+      lv_obj_set_style_radius(body, 6, 0);
+      lv_obj_set_style_border_width(body, 2, 0);
+      lv_obj_set_style_border_color(body, kMutedStrong, 0);
+      auto *fill = lv_obj_create(body);
+      Clear(fill);
+      lv_obj_set_pos(fill, 3, 3);
+      lv_obj_set_size(fill, 44, 26);
+      lv_obj_set_style_radius(fill, 3, 0);
+      lv_obj_set_style_bg_color(fill, kText, 0);
+      lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
+      auto *tip = lv_obj_create(preview);
+      state->battery_preview_tip = tip;
+      Clear(tip);
+      lv_obj_set_pos(tip, 171, 32);
+      lv_obj_set_size(tip, 6, 16);
+      lv_obj_set_style_radius(tip, 2, 0);
+      lv_obj_set_style_bg_color(tip, kMutedStrong, 0);
+      lv_obj_set_style_bg_opa(tip, LV_OPA_COVER, 0);
+    }
+    OnClick(card, [state, i] {
+      if (!RecoverySetBatteryStyle(static_cast<BatteryStyle>(i))) {
+        Sheet(state->screen, "Setting unavailable", "This setting could not be changed.");
+        return;
+      }
+      for (int j = 0; j < 2; ++j) {
+        lv_obj_set_style_border_width(state->battery_choices[j], i == j ? 3 : 1, 0);
+        lv_obj_set_style_border_color(state->battery_choices[j], i == j ? kAccent : kMainLine, 0);
+        if (i == j) lv_obj_remove_flag(state->battery_checks[j], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(state->battery_checks[j], LV_OBJ_FLAG_HIDDEN);
+      }
+      RefreshBatterySettings(state);
+      RefreshStatusBars();
+    });
+  }
+  auto *percentage_row = PreferenceEntry(state, LV_SYMBOL_BATTERY_FULL, "Battery percentage", "", {}, true);
+  state->battery_percentage_row = percentage_row;
+  auto *percentage_toggle = lv_switch_create(percentage_row);
+  StyleSwitch(percentage_toggle, RecoveryBatteryPercentage());
+  OnClick(percentage_row, [state, percentage_toggle] {
+    const bool show = !RecoveryBatteryPercentage();
+    if (!RecoverySetBatteryPercentage(show)) {
+      Sheet(state->screen, "Setting unavailable", "This setting could not be changed.");
+      return;
+    }
+    StyleSwitch(percentage_toggle, show);
+    RefreshBatterySettings(state);
+    RefreshStatusBars();
+  });
+
+  auto *size_panel = lv_obj_create(state->list);
+  state->battery_size_panel = size_panel;
+  Clear(size_panel);
+  PreferenceColumn(size_panel, 12);
+  lv_obj_set_style_pad_all(size_panel, 24, 0);
+  auto *size_heading = lv_obj_create(size_panel);
+  Clear(size_heading);
+  lv_obj_set_size(size_heading, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(size_heading, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(size_heading, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  auto *size_title = Label(size_heading, "Circle size", &lv_font_montserrat_32, kText);
+  lv_obj_set_width(size_title, 0);
+  lv_obj_set_flex_grow(size_title, 1);
+  lv_label_set_long_mode(size_title, LV_LABEL_LONG_WRAP);
+  state->battery_size_amount = Label(size_heading, "", &lv_font_montserrat_24, kAccent);
+  lv_obj_set_width(state->battery_size_amount, 130);
+  lv_obj_set_style_text_align(state->battery_size_amount, LV_TEXT_ALIGN_RIGHT, 0);
+  auto *size_track = lv_obj_create(size_panel);
+  Clear(size_track);
+  lv_obj_set_size(size_track, LV_PCT(100), 96);
+  auto *size_slider = lv_slider_create(size_track);
+  state->battery_size_slider = size_slider;
+  lv_obj_set_size(size_slider, LV_PCT(96), 24);
+  lv_obj_center(size_slider);
+  lv_slider_set_range(size_slider, kBatteryCircleSizeMin, kBatteryCircleSizeMax);
+  RangeSlider(size_slider);
+  state->battery_saved_size = RecoveryBatteryCircleSize();
+  lv_obj_add_event_cb(size_slider, [](lv_event_t *event) {
+    const auto code = lv_event_get_code(event);
+    if (code != LV_EVENT_VALUE_CHANGED && code != LV_EVENT_RELEASED && code != LV_EVENT_PRESS_LOST) return;
+    auto *state = static_cast<Tools *>(lv_event_get_user_data(event));
+    const int size = code == LV_EVENT_PRESS_LOST ? state->battery_saved_size :
+        lv_slider_get_value(lv_event_get_target_obj(event));
+    const bool save = code == LV_EVENT_RELEASED;
+    if (RecoverySetBatteryCircleSize(size, save)) {
+      if (save) state->battery_saved_size = size;
+      i18n::BindLabel(state->summary, save ? "Settings saved" : "");
+      lv_obj_set_style_text_color(state->summary, kGreen, 0);
+    } else {
+      RecoverySetBatteryCircleSize(state->battery_saved_size, false);
+      i18n::BindLabel(state->summary, "This setting could not be changed.");
+      lv_obj_set_style_text_color(state->summary, kRed, 0);
+    }
+    RefreshBatterySettings(state);
+    RefreshStatusBars();
+  }, LV_EVENT_ALL, state);
+  PreferenceSection(state, "Network");
+  const auto display = RecoveryWifiStatusDisplay();
+  state->status_saved_position = display.speed_position;
+  auto *speed_row = PreferenceEntry(state, LV_SYMBOL_WIFI, "Network speed", "", {}, true);
+  auto *speed_toggle = lv_switch_create(speed_row);
+  StyleSwitch(speed_toggle, display.show_speed);
+  OnClick(speed_row, [state, speed_toggle] {
+    auto display = RecoveryWifiStatusDisplay();
+    display.show_speed = !display.show_speed;
+    if (!RecoverySetWifiStatusDisplay(display)) {
+      Sheet(state->screen, "Setting unavailable", "This setting could not be changed.");
+      return;
+    }
+    StyleSwitch(speed_toggle, display.show_speed);
+    RefreshStatusPosition(state);
+    RefreshStatusBars();
+  });
+  auto *name_row = PreferenceEntry(state, LV_SYMBOL_WIFI, "Show network name", "", {}, true);
+  auto *name_toggle = lv_switch_create(name_row);
+  StyleSwitch(name_toggle, display.show_name);
+  OnClick(name_row, [state, name_toggle] {
+    auto display = RecoveryWifiStatusDisplay();
+    display.show_name = !display.show_name;
+    if (!RecoverySetWifiStatusDisplay(display)) {
+      Sheet(state->screen, "Setting unavailable", "This setting could not be changed.");
+      return;
+    }
+    StyleSwitch(name_toggle, display.show_name);
+    RefreshStatusBars();
+  });
+  auto *position = lv_obj_create(state->list);
+  state->status_position = position;
+  Clear(position);
+  PreferenceColumn(position, 12);
+  lv_obj_set_style_pad_all(position, 24, 0);
+  auto *heading = lv_obj_create(position);
+  Clear(heading);
+  lv_obj_set_size(heading, LV_PCT(100), LV_SIZE_CONTENT);
+  lv_obj_set_flex_flow(heading, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(heading, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  auto *title = Label(heading, "Speed position", &lv_font_montserrat_32, kText);
+  lv_obj_set_width(title, 0);
+  lv_obj_set_flex_grow(title, 1);
+  lv_label_set_long_mode(title, LV_LABEL_LONG_WRAP);
+  state->status_position_amount = Label(heading, "", &lv_font_montserrat_24, kAccent);
+  lv_obj_set_width(state->status_position_amount, 130);
+  lv_obj_set_style_text_align(state->status_position_amount, LV_TEXT_ALIGN_RIGHT, 0);
+  auto *track = lv_obj_create(position);
+  Clear(track);
+  lv_obj_set_size(track, LV_PCT(100), 96);
+  auto *slider = lv_slider_create(track);
+  state->status_position_slider = slider;
+  lv_obj_set_size(slider, LV_PCT(96), 24);
+  lv_obj_center(slider);
+  lv_slider_set_range(slider, 0, 100);
+  RangeSlider(slider);
+  state->summary = Label(state->list, "", &lv_font_montserrat_24, kMuted);
+  lv_obj_set_width(state->summary, LV_PCT(100));
+  lv_obj_add_event_cb(slider, [](lv_event_t *event) {
+    const auto code = lv_event_get_code(event);
+    if (code != LV_EVENT_VALUE_CHANGED && code != LV_EVENT_RELEASED && code != LV_EVENT_PRESS_LOST) return;
+    auto *state = static_cast<Tools *>(lv_event_get_user_data(event));
+    auto display = RecoveryWifiStatusDisplay();
+    display.speed_position = code == LV_EVENT_PRESS_LOST ? state->status_saved_position :
+        lv_slider_get_value(lv_event_get_target_obj(event));
+    const bool save = code == LV_EVENT_RELEASED;
+    if (RecoverySetWifiStatusDisplay(display, save)) {
+      if (save) state->status_saved_position = display.speed_position;
+      i18n::BindLabel(state->summary, save ? "Settings saved" : "");
+      lv_obj_set_style_text_color(state->summary, kGreen, 0);
+    } else {
+      display.speed_position = state->status_saved_position;
+      RecoverySetWifiStatusDisplay(display, false);
+      i18n::BindLabel(state->summary, "This setting could not be changed.");
+      lv_obj_set_style_text_color(state->summary, kRed, 0);
+    }
+    RefreshStatusPosition(state);
+    RefreshStatusBars();
+  }, LV_EVENT_ALL, state);
+  RefreshStatusPosition(state);
+  RefreshBatterySettings(state);
 }
 
 void RefreshPcConnection(Tools *state) {
@@ -2779,6 +3058,13 @@ void BuildToolScene(lv_obj_t *screen, Action tool, ActionCallback callback, void
   lv_obj_add_event_cb(screen, [](lv_event_t *event) {
     auto *state = static_cast<Tools *>(lv_event_get_user_data(event));
     if (state->pc_timer) lv_timer_delete(state->pc_timer);
+    if (state->tool == Action::kStatusBar) {
+      auto display = RecoveryWifiStatusDisplay();
+      display.speed_position = state->status_saved_position;
+      RecoverySetWifiStatusDisplay(display, false);
+      RecoverySetBatteryCircleSize(state->battery_saved_size, false);
+      RefreshStatusBars();
+    }
     delete state;
   }, LV_EVENT_DELETE, state);
   if (tool == Action::kBackup || tool == Action::kWipe || tool == Action::kRestore)
@@ -2787,6 +3073,7 @@ void BuildToolScene(lv_obj_t *screen, Action tool, ActionCallback callback, void
   else if (tool == Action::kMounts) BuildMounts(state);
   else if (tool == Action::kPreferences) BuildPreferences(state);
   else if (tool == Action::kLanguage) BuildLanguage(state);
+  else if (tool == Action::kStatusBar) BuildStatusBarSettings(state);
   else if (tool == Action::kPcConnection) BuildPcConnection(state);
   else if (tool == Action::kTheme) BuildTheme(state);
   else if (tool == Action::kLogs) BuildLogs(state);

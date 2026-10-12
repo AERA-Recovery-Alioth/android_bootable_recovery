@@ -2781,6 +2781,7 @@ private:
         action == Action::kSettings ||
         action == Action::kMounts || action == Action::kLogs ||
         action == Action::kPreferences || action == Action::kLanguage ||
+        action == Action::kStatusBar ||
         action == Action::kTheme ||
         action == Action::kWifi || action == Action::kUsers ||
         action == Action::kPcConnection;

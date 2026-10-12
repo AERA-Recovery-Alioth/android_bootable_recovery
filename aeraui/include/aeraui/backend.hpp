@@ -320,7 +320,30 @@ struct WifiStatus {
 struct WifiConnection {
   bool connected = false;
   std::string ssid;
+  int signal_dbm = -999;
 };
+struct WifiTraffic {
+  bool valid = false;
+  std::string interface;
+  unsigned interface_index = 0;
+  uint64_t received_bytes = 0;
+  uint64_t sent_bytes = 0;
+};
+struct WifiStatusDisplay {
+  bool show_speed = true;
+  bool show_name = true;
+  int speed_position = 100;
+};
+enum class BatteryStyle { kClassic = 0, kCircle = 1 };
+constexpr int kBatteryCircleSizeMin = 48;
+constexpr int kBatteryCircleSizeMax = 96;
+constexpr int kBatteryCircleSizeDefault = 64;
+BatteryStyle RecoveryBatteryStyle();
+bool RecoverySetBatteryStyle(BatteryStyle style);
+int RecoveryBatteryCircleSize();
+bool RecoverySetBatteryCircleSize(int size, bool save = true);
+bool RecoveryBatteryPercentage();
+bool RecoverySetBatteryPercentage(bool show);
 enum class WifiOperation {
   kEnable,
   kDisable,
@@ -342,6 +365,9 @@ struct WifiRequest {
 };
 void RecoveryWifiInitialize();
 WifiConnection RecoveryWifiConnection();
+WifiTraffic RecoveryWifiTraffic();
+WifiStatusDisplay RecoveryWifiStatusDisplay();
+bool RecoverySetWifiStatusDisplay(const WifiStatusDisplay &display, bool save = true);
 WifiStatus RecoveryWifiStatus();
 int RecoveryRunWifi(const WifiRequest &request);
 bool RecoveryWifiAutoEnable();

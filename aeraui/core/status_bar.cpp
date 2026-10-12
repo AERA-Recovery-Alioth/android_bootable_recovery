@@ -11,11 +11,14 @@
 #include <cstring>
 #include <ctime>
 #include <string>
+#include <vector>
 
 #include <lvgl.h>
 
 #include "design.hpp"
 #include "ui_components.hpp"
+#include "circle_battery.hpp"
+#include "wifi_indicator.hpp"
 #include "browser/session.hpp"
 #include "plugin_api/operations.hpp"
 #include "recorder/service.hpp"
@@ -26,6 +29,43 @@ namespace aeraui {
 namespace {
 using namespace design;
 
+struct TrafficRate {
+  WifiTraffic previous;
+  uint32_t sampled_at = 0;
+  double bytes_per_second = 0;
+
+  void Reset() { previous = {}; sampled_at = 0; bytes_per_second = 0; }
+
+  double Sample(const WifiTraffic &traffic, uint32_t now) {
+    if (!traffic.valid) { Reset(); return 0; }
+    const uint32_t elapsed = now - sampled_at;
+    if (!previous.valid || previous.interface != traffic.interface ||
+        previous.interface_index != traffic.interface_index ||
+        traffic.received_bytes < previous.received_bytes ||
+        traffic.sent_bytes < previous.sent_bytes) {
+      bytes_per_second = 0;
+    } else if (elapsed != 0) {
+      // Use the actual interval, including UI stalls, and sum RX + TX in bytes.
+      bytes_per_second = (double(traffic.received_bytes - previous.received_bytes) +
+          double(traffic.sent_bytes - previous.sent_bytes)) * 1000.0 / elapsed;
+    } else {
+      return bytes_per_second;
+    }
+    previous = traffic;
+    sampled_at = now;
+    return bytes_per_second;
+  }
+};
+
+std::string TrafficText(double bytes_per_second) {
+  char text[32];
+  if (bytes_per_second >= 1000000.0)
+    snprintf(text, sizeof(text), "%.1f MB/s", bytes_per_second / 1000000.0);
+  else
+    snprintf(text, sizeof(text), "%u KB/s", unsigned(bytes_per_second / 1000.0));
+  return text;
+}
+
 struct StatusState {
   lv_timer_t *timer = nullptr;
   lv_obj_t *screen = nullptr;
@@ -34,10 +74,17 @@ struct StatusState {
   lv_obj_t *mirror = nullptr;
   lv_obj_t *download = nullptr;
   lv_obj_t *wifi = nullptr;
+  widgets::WifiIndicator wifi_icon;
+  lv_obj_t *wifi_speed = nullptr;
+  TrafficRate traffic_rate;
   lv_obj_t *recording_dot = nullptr;
   lv_obj_t *recording = nullptr;
   lv_obj_t *battery_text = nullptr;
   lv_obj_t *battery_fill = nullptr;
+  lv_obj_t *battery_body = nullptr;
+  lv_obj_t *battery_tip = nullptr;
+  lv_obj_t *battery_charge = nullptr;
+  widgets::CircleBattery battery_circle;
   lv_obj_t *shade = nullptr;
   lv_obj_t *sheet = nullptr;
   lv_obj_t *shade_wifi = nullptr;
@@ -79,6 +126,7 @@ int32_t gStatusBarHeight = 165;
 int32_t gStatusIndentLeft = 54;
 int32_t gStatusIndentRight = 54;
 lv_obj_t *gOpenShade = nullptr;
+std::vector<StatusState *> gStatusBars;
 
 void ShadeDeleted(lv_event_t *event) {
   auto *shade = lv_event_get_target_obj(event);
@@ -661,44 +709,49 @@ void Refresh(StatusState *state, bool refresh_battery) {
     strftime(clock_text, sizeof(clock_text),
              RecoveryPreference(Preference::kClock24) ? "%H:%M" : "%I:%M %p", &local);
   i18n::BindLabel(state->clock, clock_text);
+  if (refresh_battery) {
+    state->battery = ReadCapacity();
+    state->charging = ReadCharging();
+  }
+  char battery_text[24];
+  if (state->battery < 0) {
+    snprintf(battery_text, sizeof(battery_text), "--%%");
+  } else {
+    snprintf(battery_text, sizeof(battery_text), "%d%%%s", state->battery,
+             state->charging ? " +" : "");
+  }
+  i18n::BindLabel(state->battery_text, battery_text);
+  const bool circle_battery = RecoveryBatteryStyle() == BatteryStyle::kCircle;
+  const bool show_percentage = RecoveryBatteryPercentage();
+  for (auto *object : {state->battery_body, state->battery_tip}) {
+    if (circle_battery) lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_flag(object, LV_OBJ_FLAG_HIDDEN);
+  }
+  if (circle_battery || !show_percentage) lv_obj_add_flag(state->battery_text, LV_OBJ_FLAG_HIDDEN);
+  else lv_obj_remove_flag(state->battery_text, LV_OBJ_FLAG_HIDDEN);
+  if (!circle_battery && !show_percentage && state->charging)
+    lv_obj_remove_flag(state->battery_charge, LV_OBJ_FLAG_HIDDEN);
+  else lv_obj_add_flag(state->battery_charge, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_style_text_color(state->battery_charge, state->battery >= 60 ? kCanvas : kText, 0);
+  if (circle_battery) lv_obj_remove_flag(state->battery_circle.root, LV_OBJ_FLAG_HIDDEN);
+  else lv_obj_add_flag(state->battery_circle.root, LV_OBJ_FLAG_HIDDEN);
+  widgets::ResizeCircleBattery(state->battery_circle, RecoveryBatteryCircleSize());
+  widgets::UpdateCircleBattery(state->battery_circle, state->battery, state->charging);
   lv_obj_update_layout(state->bar);
 
-  lv_obj_t *activity_anchor = state->clock;
-  int activity_gap = 26;
-
-  const auto mirror = plugin_api::ActiveMirrorMode();
-  if (mirror != plugin_api::MirrorMode::kOff) {
-    const std::string text =
-        mirror == plugin_api::MirrorMode::kWifi
-            ? std::string(LV_SYMBOL_VIDEO) + "  Wi-Fi Mirror"
-            : std::string(LV_SYMBOL_USB) + "  USB Mirror";
-    i18n::BindLabel(state->mirror, text.c_str());
-    lv_obj_align_to(state->mirror, activity_anchor,
-                    LV_ALIGN_OUT_RIGHT_MID, activity_gap, 0);
-    lv_obj_remove_flag(state->mirror, LV_OBJ_FLAG_HIDDEN);
-    activity_anchor = state->mirror;
-    activity_gap = 18;
-  } else {
-    lv_obj_add_flag(state->mirror, LV_OBJ_FLAG_HIDDEN);
-  }
-
-  const auto download = web::CurrentDownloadSummary();
-  if (download.active_count) {
-    lv_obj_align_to(state->download, activity_anchor,
-                    LV_ALIGN_OUT_RIGHT_MID, activity_gap, 0);
-    lv_obj_remove_flag(state->download, LV_OBJ_FLAG_HIDDEN);
-    activity_anchor = state->download;
-    activity_gap = 18;
-  } else {
-    lv_obj_add_flag(state->download, LV_OBJ_FLAG_HIDDEN);
-  }
-  lv_obj_align_to(state->recording_dot, activity_anchor,
-                  LV_ALIGN_OUT_RIGHT_MID, activity_gap, 0);
-  lv_obj_align_to(state->recording, state->recording_dot,
-                  LV_ALIGN_OUT_RIGHT_MID, 14, 0);
-
+  const auto connection = RecoveryWifiConnection();
+  const auto display = RecoveryWifiStatusDisplay();
+  const auto traffic = connection.connected && display.show_speed ? RecoveryWifiTraffic() : WifiTraffic{};
+  const auto speed = TrafficText(state->traffic_rate.Sample(traffic, lv_tick_get()));
+  lv_label_set_text(state->wifi_speed, speed.c_str());
+  const bool show_speed = connection.connected && display.show_speed && traffic.valid;
+  // Reserve only the width currently used by the battery percentage/charge text.
+  const int wifi_right = lv_obj_get_x(circle_battery ? state->battery_circle.root :
+      show_percentage ? state->battery_text : state->battery_body) - 24;
+  const int network_reserved = connection.connected ? widgets::kWifiIndicatorWidth + 26 + (show_speed ? 192 : 0) : 0;
   const auto recording = recorder::GetSnapshot();
-  if (recorder::Active()) {
+  const bool recording_active = recorder::Active();
+  if (recording_active) {
     const uint64_t seconds = recording.elapsed_ms / 1000;
     char text[48];
     snprintf(text, sizeof(text), "%s%02llu:%02llu",
@@ -710,37 +763,90 @@ void Refresh(StatusState *state, bool refresh_battery) {
     i18n::BindLabel(state->recording, text);
     lv_obj_set_style_text_color(state->recording, color, 0);
     lv_obj_set_style_bg_color(state->recording_dot, color, 0);
+    lv_obj_set_width(state->recording, LV_SIZE_CONTENT);
     lv_obj_remove_flag(state->recording_dot, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(state->recording, LV_OBJ_FLAG_HIDDEN);
   } else {
     lv_obj_add_flag(state->recording_dot, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(state->recording, LV_OBJ_FLAG_HIDDEN);
   }
+  lv_obj_update_layout(state->bar);
+  const auto download = web::CurrentDownloadSummary();
+  const int recording_reserved = recording_active ? lv_obj_get_width(state->recording) + 48 : 0;
+  const int download_reserved = download.active_count ? 90 : 0;
+  lv_obj_t *activity_anchor = state->clock;
+  int activity_gap = 26;
+  const auto mirror = plugin_api::ActiveMirrorMode();
+  if (mirror != plugin_api::MirrorMode::kOff) {
+    const std::string text =
+        mirror == plugin_api::MirrorMode::kWifi
+            ? std::string(LV_SYMBOL_VIDEO) + "  Wi-Fi Mirror"
+            : std::string(LV_SYMBOL_USB) + "  USB Mirror";
+    i18n::BindLabel(state->mirror, text.c_str());
+    const int available = wifi_right - network_reserved - recording_reserved -
+        download_reserved - lv_obj_get_x(state->clock) - lv_obj_get_width(state->clock) - 26;
+    lv_obj_set_width(state->mirror, std::clamp(available, 0, 330));
+    lv_obj_align_to(state->mirror, activity_anchor,
+                    LV_ALIGN_OUT_RIGHT_MID, activity_gap, 0);
+    lv_obj_remove_flag(state->mirror, LV_OBJ_FLAG_HIDDEN);
+    activity_anchor = state->mirror;
+    activity_gap = 18;
+  } else {
+    lv_obj_add_flag(state->mirror, LV_OBJ_FLAG_HIDDEN);
+  }
+  lv_obj_update_layout(state->bar);
+  if (download.active_count) {
+    lv_obj_align_to(state->download, activity_anchor,
+                    LV_ALIGN_OUT_RIGHT_MID, activity_gap, 0);
+    lv_obj_remove_flag(state->download, LV_OBJ_FLAG_HIDDEN);
+    activity_anchor = state->download;
+    activity_gap = 18;
+  } else {
+    lv_obj_add_flag(state->download, LV_OBJ_FLAG_HIDDEN);
+  }
+  lv_obj_update_layout(state->bar);
+  lv_obj_align_to(state->recording_dot, activity_anchor,
+                  LV_ALIGN_OUT_RIGHT_MID, activity_gap, 0);
+  lv_obj_update_layout(state->bar);
+  lv_obj_align_to(state->recording, state->recording_dot,
+                  LV_ALIGN_OUT_RIGHT_MID, 14, 0);
+  if (recording_active) activity_anchor = state->recording;
+  lv_obj_update_layout(state->bar);
 
-  const auto connection = RecoveryWifiConnection();
   if (connection.connected) {
-    const std::string text = std::string(LV_SYMBOL_WIFI) + "  " +
-        (connection.ssid.empty() ? "Connected" : connection.ssid);
+    const std::string text = display.show_name ?
+        (connection.ssid.empty() ? std::string("Connected") : connection.ssid) : "";
     i18n::BindLabel(state->wifi, text.c_str());
-    lv_obj_set_style_text_color(state->wifi, kMutedStrong, 0);
     lv_obj_remove_flag(state->wifi, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_width(state->wifi, LV_SIZE_CONTENT);
+    lv_obj_update_layout(state->bar);
+    const int available = wifi_right - lv_obj_get_x(activity_anchor) -
+        lv_obj_get_width(activity_anchor) - 26 - (show_speed ? 192 : 0);
+    const int name_width = display.show_name ? std::clamp(lv_obj_get_width(state->wifi), 0,
+        std::max(0, std::min(available, 660 - (show_speed ? 192 : 0)) - widgets::kWifiIndicatorWidth - 12)) : 0;
+    lv_obj_set_width(state->wifi, name_width);
+    const int icon_x = wifi_right - widgets::kWifiIndicatorWidth - (name_width > 0 ? name_width + 12 : 0);
+    lv_obj_align(state->wifi_icon.root, LV_ALIGN_LEFT_MID, icon_x, 0);
+    widgets::UpdateWifiIndicator(state->wifi_icon, connection.signal_dbm);
+    lv_obj_remove_flag(state->wifi_icon.root, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align(state->wifi, LV_ALIGN_LEFT_MID, icon_x + widgets::kWifiIndicatorWidth + 12, 0);
+    lv_obj_set_style_text_color(state->wifi, kMutedStrong, 0);
+    if (name_width > 0) lv_obj_remove_flag(state->wifi, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(state->wifi, LV_OBJ_FLAG_HIDDEN);
   } else {
     lv_obj_add_flag(state->wifi, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(state->wifi_icon.root, LV_OBJ_FLAG_HIDDEN);
   }
-
-  if (refresh_battery) {
-    state->battery = ReadCapacity();
-    state->charging = ReadCharging();
-  }
-
-  char battery_text[24];
-  if (state->battery < 0) {
-    snprintf(battery_text, sizeof(battery_text), "--%%");
+  if (show_speed) {
+    lv_obj_update_layout(state->bar);
+    const int left = lv_obj_get_x(activity_anchor) + lv_obj_get_width(activity_anchor) + 26;
+    const int right = std::max(left, int(lv_obj_get_x(state->wifi_icon.root)) - 192);
+    const int x = left + (right - left) * std::clamp(display.speed_position, 0, 100) / 100;
+    lv_obj_align(state->wifi_speed, LV_ALIGN_LEFT_MID, x, 0);
+    lv_obj_remove_flag(state->wifi_speed, LV_OBJ_FLAG_HIDDEN);
   } else {
-    snprintf(battery_text, sizeof(battery_text), "%d%%%s", state->battery,
-             state->charging ? " +" : "");
+    lv_obj_add_flag(state->wifi_speed, LV_OBJ_FLAG_HIDDEN);
   }
-  i18n::BindLabel(state->battery_text, battery_text);
 
   const int level = state->battery < 0 ? 0 : state->battery;
   lv_obj_set_width(state->battery_fill, std::max(3, level * 58 / 100));
@@ -760,6 +866,7 @@ void TimerTick(lv_timer_t *timer) {
 void DeleteState(lv_event_t *event) {
   auto *state = static_cast<StatusState *>(lv_event_get_user_data(event));
   if (state == nullptr) return;
+  gStatusBars.erase(std::remove(gStatusBars.begin(), gStatusBars.end(), state), gStatusBars.end());
   lv_anim_delete(state, nullptr);
   if (state->timer != nullptr) lv_timer_delete(state->timer);
   delete state;
@@ -796,6 +903,10 @@ bool StatusBarShadeOpen() {
   return gOpenShade != nullptr;
 }
 
+void RefreshStatusBars() {
+  for (auto *state : gStatusBars) Refresh(state, false);
+}
+
 void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
                      void *context, StatusBarAction action, bool soft_surface) {
   auto *state = new StatusState;
@@ -803,6 +914,7 @@ void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
   state->callback = callback;
   state->context = context;
   state->action = action;
+  gStatusBars.push_back(state);
   lv_obj_add_event_cb(screen, DeleteState, LV_EVENT_DELETE, state);
 
   lv_obj_t *bar = lv_obj_create(screen);
@@ -868,13 +980,20 @@ void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
   lv_obj_add_flag(state->recording, LV_OBJ_FLAG_HIDDEN);
 
   state->wifi = Label(bar, "", &lv_font_montserrat_32, kMutedStrong);
+  state->wifi_icon = widgets::CreateWifiIndicator(bar);
+  lv_obj_add_flag(state->wifi_icon.root, LV_OBJ_FLAG_HIDDEN);
   lv_obj_set_width(state->wifi, 660);
-  lv_obj_set_style_text_align(state->wifi, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_set_style_text_align(state->wifi, LV_TEXT_ALIGN_LEFT, 0);
   lv_label_set_long_mode(state->wifi, LV_LABEL_LONG_DOT);
   lv_obj_align(state->wifi, LV_ALIGN_RIGHT_MID,
                -(gStatusIndentRight +
                  (action == StatusBarAction::kNone ? 216 : 336)), 0);
   lv_obj_add_flag(state->wifi, LV_OBJ_FLAG_HIDDEN);
+
+  state->wifi_speed = Label(bar, "0 KB/s", &lv_font_montserrat_24, kMutedStrong);
+  lv_obj_set_width(state->wifi_speed, 176);
+  lv_obj_set_style_text_align(state->wifi_speed, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_add_flag(state->wifi_speed, LV_OBJ_FLAG_HIDDEN);
 
   state->battery_text =
       Label(bar, "--%", &lv_font_montserrat_32, kMutedStrong);
@@ -883,6 +1002,7 @@ void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
                  (action == StatusBarAction::kNone ? 96 : 216)), 0);
 
   lv_obj_t *battery = lv_obj_create(bar);
+  state->battery_body = battery;
   NoScroll(battery);
   lv_obj_set_size(battery, 68, 36);
   lv_obj_align(battery, LV_ALIGN_RIGHT_MID,
@@ -895,6 +1015,7 @@ void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
   lv_obj_set_style_pad_all(battery, 0, 0);
 
   lv_obj_t *terminal = lv_obj_create(bar);
+  state->battery_tip = terminal;
   NoScroll(terminal);
   lv_obj_set_size(terminal, 6, 16);
   lv_obj_align_to(terminal, battery, LV_ALIGN_OUT_RIGHT_MID, 3, 0);
@@ -910,6 +1031,12 @@ void AttachStatusBar(lv_obj_t *screen, void (*callback)(Action, void *),
   lv_obj_set_style_radius(state->battery_fill, 3, 0);
   lv_obj_set_style_bg_opa(state->battery_fill, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(state->battery_fill, 0, 0);
+  state->battery_charge = Label(bar, LV_SYMBOL_CHARGE, &lv_font_montserrat_16, kText);
+  lv_obj_align_to(state->battery_charge, state->battery_body, LV_ALIGN_CENTER, 0, 0);
+
+  state->battery_circle = widgets::CreateCircleBattery(bar);
+  lv_obj_align(state->battery_circle.root, LV_ALIGN_RIGHT_MID,
+      -(gStatusIndentRight + (action == StatusBarAction::kNone ? 0 : 110)), 0);
 
   Refresh(state, true);
   state->timer = lv_timer_create(TimerTick, 1000, state);

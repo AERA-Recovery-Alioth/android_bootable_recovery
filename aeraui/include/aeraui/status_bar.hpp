@@ -26,6 +26,8 @@ int32_t StatusBarHeight();
 // True while the pull-down shade (including its closing animation) owns
 // pointer input above the current scene.
 bool StatusBarShadeOpen();
+// UI-thread refresh for immediate status display preference previews.
+void RefreshStatusBars();
 
 // Adds the persistent clock and battery chrome used by native recovery pages.
 void AttachStatusBar(_lv_obj_t *screen, void (*callback)(Action, void *),
