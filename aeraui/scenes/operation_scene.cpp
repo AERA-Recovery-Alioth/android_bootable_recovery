@@ -517,6 +517,22 @@ void ReflowOperationHeader(const OperationScene &scene) {
   lv_obj_set_y(scene.destination, 650 + extra);
   lv_obj_set_height(card, (landscape ? 850 : 756) + extra);
   if (!landscape) lv_obj_set_y(scene.activity_panel, 1230 + extra);
+  if (scene.payload_parallel && scene.payload_list && scene.details) {
+    auto *screen = lv_obj_get_parent(card);
+    lv_obj_update_layout(screen);
+    // Use the otherwise empty lower viewport while flashing. Once Done is
+    // visible, shrink the scrollable list to leave the footer accessible.
+    const int bottom = scene.done &&
+        !lv_obj_has_flag(scene.done, LV_OBJ_FLAG_HIDDEN)
+        ? static_cast<int>(lv_obj_get_y(scene.done)) - 36
+        : static_cast<int>(lv_obj_get_height(screen)) - (landscape ? 70 : 130);
+    // Use the resting position, not the entrance animation's temporary offset.
+    const int height = std::max(1, bottom - (landscape ? 340 : 1230 + extra));
+    lv_obj_set_height(scene.activity_panel, height);
+    lv_obj_set_y(scene.details, height - 200);
+    lv_obj_set_height(scene.payload_list, std::max(1,
+        height - 240 - static_cast<int>(lv_obj_get_y(scene.payload_list))));
+  }
 }
 
 }  // namespace

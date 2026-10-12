@@ -703,6 +703,11 @@ int main(int argc,char **argv) {
     lv_obj_get_coords(operation.details, &details);
     assert(row.y2 < details.y1);
     assert(details.y2 < lv_display_get_vertical_resolution(display));
+    lv_area_t panel;
+    lv_obj_get_coords(operation.activity_panel, &panel);
+    const int running_height = lv_obj_get_height(operation.activity_panel);
+    assert(panel.y2 == lv_display_get_vertical_resolution(display) -
+        (landscape ? 70 : 130) - 1);
     lv_obj_scroll_to_view(operation.payload_cards.back(), LV_ANIM_OFF);
     Tick();
     lv_area_t last;
@@ -715,6 +720,17 @@ int main(int argc,char **argv) {
     payload_progress.partitions[1].phase = PayloadPhase::Verified;
     RefreshOperationScene(operation);
     assert(!strcmp(lv_label_get_text(operation.payload_states[1]), "Verified"));
+    CompleteOperationScene(operation, true, "Flash verified successfully.");
+    Tick();
+    lv_area_t done;
+    lv_obj_get_coords(operation.activity_panel, &panel);
+    lv_obj_get_coords(operation.done, &done);
+    lv_obj_get_coords(operation.payload_list, &row);
+    lv_obj_get_coords(operation.details, &details);
+    assert(!lv_obj_has_flag(operation.done, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_get_height(operation.activity_panel) < running_height);
+    assert(panel.y2 < done.y1 && row.y2 < details.y1);
+    assert(details.y2 <= panel.y2);
     std::filesystem::remove_all(backup_root);
     return 0;
   }
