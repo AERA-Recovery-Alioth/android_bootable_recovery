@@ -28,7 +28,7 @@ function computerBackup(){return backupChoice('backupSource')==='computer'}
 function backupBlockBytes(){return Math.min(8388608,Number(state.info?.backup_block_bytes)||524288)}
 function backupOperationLocked(){return ['backup','restore'].includes(state.job?.backup_action)&&['queued','installing'].includes(state.job?.phase)}
 const originalBackupShowTab=showTab;
-showTab=function(tab){if(backupOperationLocked()&&tab!==workspace.tab)return;originalBackupShowTab(tab)};
+showTab=function(tab){if(backupOperationLocked()&&tab!==workspace.tab&&!['terminal','backups'].includes(tab))return;originalBackupShowTab(tab)};
 function visibleBackupChoices(){
   const filter=$('backupFilter').value.trim().toLowerCase();
   return backups.choices.filter(item=>(!appBackup()||$('backupSystem').checked||!item.system)&&

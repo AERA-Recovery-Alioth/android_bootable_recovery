@@ -173,9 +173,14 @@ target_include_directories(image_targets_test PRIVATE ../include)
 target_compile_options(image_targets_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_test(NAME physical_firmware_image_targets COMMAND image_targets_test)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
-add_executable(pc_connection_host pc_connection_host.cpp ../../aera_remote/pc_connection.cpp ../../aera_remote/pc_storage.cpp)
+add_executable(pc_connection_host pc_connection_host.cpp ../../aera_remote/pc_connection.cpp ../../aera_remote/pc_storage.cpp ../../aera_remote/pc_terminal.cpp)
 target_include_directories(pc_connection_host PRIVATE ../include)
 set(AERA_TEST_ROOT_MANAGER "1" CACHE STRING "Root Manager feature flag for the PC host fixture")
+find_program(AERA_TEST_TTYD NAMES ttyd)
+if(AERA_TEST_TTYD)
+  target_compile_definitions(pc_connection_host PRIVATE
+    AERA_PC_TERMINAL_BINARY="${AERA_TEST_TTYD}" AERA_PC_TERMINAL_SHELL="/bin/sh")
+endif()
 target_compile_definitions(pc_connection_host PRIVATE OF_ENABLE_WLAN=1 AERA_PC_HOST_TEST=1
   AERA_ENABLE_ROOT_MANAGER=${AERA_TEST_ROOT_MANAGER}
   AERA_PC_PRIVATE_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/pc-private"

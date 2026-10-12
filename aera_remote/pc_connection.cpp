@@ -2,6 +2,7 @@
 #include "pc_connection.hpp"
 #include "pc_storage.hpp"
 #include "backup_cancel.hpp"
+#include "pc_terminal.hpp"
 #include "../aeraui/features/backup/app_vault.hpp"
 
 #ifdef OF_ENABLE_WLAN
@@ -353,6 +354,7 @@ TlsContext MakeTlsContext(bool persistent, const std::string &ip,
 
 struct HttpRequest {
   std::string method, path, host, origin, authorization, prefix;
+  std::string cookie, upgrade, websocket_key, websocket_version, websocket_protocol;
   uint64_t length = 0;
 };
 bool TlsWrite(SSL *tls, const char *bytes, size_t size) {
@@ -364,14 +366,16 @@ bool TlsWrite(SSL *tls, const char *bytes, size_t size) {
   return true;
 }
 thread_local bool keep_connection = false;
-void Reply(SSL *tls, int status, const std::string &body, const char *type = "application/json") {
+void Reply(SSL *tls, int status, const std::string &body, const char *type = "application/json",
+           const std::string &extra_headers = "") {
   const char *reason = status == 200 ? "OK" : status == 202 ? "Accepted" : status == 400 ? "Bad Request" :
       status == 401 ? "Unauthorized" : status == 403 ? "Forbidden" : status == 409 ? "Conflict" : "Error";
   const std::string header = "HTTP/1.1 " + std::to_string(status) + " " + reason +
       "\r\nContent-Type: " + type + "\r\nContent-Length: " + std::to_string(body.size()) +
       "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer"
       "\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
-      "\r\nConnection: " + (keep_connection ? "keep-alive\r\nKeep-Alive: timeout=5" : "close") + "\r\n\r\n";
+      "\r\nConnection: " + (keep_connection ? "keep-alive\r\nKeep-Alive: timeout=5" : "close") +
+      "\r\n" + extra_headers + "\r\n";
   if (!TlsWrite(tls, header.data(), header.size()) || !TlsWrite(tls, body.data(), body.size()))
     keep_connection = false;
 }
@@ -508,6 +512,11 @@ bool ReadHeaders(SSL *tls, HttpRequest *request) {
     if (key == "host") request->host = value;
     if (key == "origin") request->origin = value;
     if (key == "authorization") request->authorization = value;
+    if (key == "cookie") request->cookie = value;
+    if (key == "upgrade") request->upgrade = Lower(value);
+    if (key == "sec-websocket-key") request->websocket_key = value;
+    if (key == "sec-websocket-version") request->websocket_version = value;
+    if (key == "sec-websocket-protocol") request->websocket_protocol = value;
     if (key == "content-length") {
       if (have_length || value.empty() || !std::all_of(value.begin(), value.end(), ::isdigit)) return false;
       errno = 0; char *end = nullptr;
@@ -721,6 +730,25 @@ Json::Value TransferStatus() {
 }
 bool TerminalPhase(const std::string &phase) {
   return phase == "idle" || phase == "completed" || phase == "failed" || phase == "cancelled";
+}
+
+bool TerminalAuthorized(const std::string &session) {
+  std::lock_guard<std::mutex> guard(g_lock);
+  return g_running.load() && g_sessions.count(session);
+}
+
+std::string TerminalCookie(const HttpRequest &request) {
+  std::istringstream cookies(request.cookie);
+  std::string value;
+  while (std::getline(cookies, value, ';')) {
+    value = Trim(value);
+    constexpr char prefix[] = "aera_terminal=";
+    if (value.compare(0, sizeof(prefix) - 1, prefix) == 0) {
+      value.erase(0, sizeof(prefix) - 1);
+      if (IsToken(value)) return value;
+    }
+  }
+  return {};
 }
 bool ChildOf(const std::string &path, const std::string &root) {
   return path == root || (path.size() > root.size() && path.compare(0, root.size(), root) == 0 && path[root.size()] == '/');
@@ -1472,7 +1500,8 @@ void Handle(SSL *tls, unsigned generation) {
     return;
   }
   if (request.method == "GET" && (request.path == "/workspace.js" || request.path == "/workspace.css" ||
-                                  request.path == "/backups.js" || request.path == "/backups.css")) {
+                                  request.path == "/backups.js" || request.path == "/backups.css" ||
+                                  request.path == "/terminal.js" || request.path == "/terminal.css")) {
     const auto asset = ReadFile(std::string(AERA_PC_CLIENT_PATH).substr(0,
         std::string(AERA_PC_CLIENT_PATH).find_last_of('/')) + request.path, 128 * 1024);
     if (asset.empty()) Error(tls, 404, "Workspace asset is not available.");
@@ -1494,10 +1523,59 @@ void Handle(SSL *tls, unsigned generation) {
     return;
   }
   const std::string owner = SessionOwner(request);
+  if (request.path == "/terminal" || request.path.compare(0, 10, "/terminal/") == 0) {
+    const bool websocket = request.path == "/terminal/ws";
+    if (request.method != "GET" || request.length != 0 ||
+        (request.path != "/terminal" && request.path != "/terminal/" &&
+         request.path != "/terminal/token" && !websocket)) {
+      Error(tls, 400, "Invalid terminal request."); return;
+    }
+    if (websocket && (request.upgrade != "websocket" || request.origin.empty() ||
+        request.websocket_version != "13" || request.websocket_key.size() != 24 ||
+        request.websocket_key.substr(22) != "==" ||
+        !std::all_of(request.websocket_key.begin(), request.websocket_key.begin() + 22,
+            [](unsigned char c) { return std::isalnum(c) || c == '+' || c == '/'; }) ||
+        (!request.websocket_protocol.empty() && request.websocket_protocol != "tty"))) {
+      Error(tls, 400, "Invalid terminal WebSocket handshake."); return;
+    }
+    terminal::Request proxy{request.path, request.websocket_key, request.websocket_protocol, websocket};
+    if (!terminal::Proxy(tls, proxy, TerminalCookie(request),
+          [generation](const std::string &session) {
+            return g_generation.load() == generation && TerminalAuthorized(session);
+          }))
+      Error(tls, 403, "Open the terminal from an authorized PC connection.");
+    return;
+  }
   if (request.method == "GET" && request.path.compare(0, 19, "/api/files/content/") == 0) {
     DownloadFile(tls, request.path.substr(19)); return;
   }
   if (owner.empty()) { Error(tls, 401, "Connect and authorize this computer first."); return; }
+  if (request.path == "/api/terminal/open" || request.path == "/api/terminal/close") {
+    Json::Value body;
+    if (request.method != "POST" || !ReadJsonBody(tls, request, &body)) {
+      Error(tls, 400, "Invalid terminal command."); return;
+    }
+    const std::string session = request.authorization.substr(7);
+    Json::Value result;
+    if (request.path == "/api/terminal/close") {
+      if (!terminal::Close(session)) { Error(tls, 403, "This terminal belongs to another computer."); return; }
+      result["closed"] = true;
+      Reply(tls, 200, JsonText(result), "application/json",
+            "Set-Cookie: aera_terminal=; Path=/terminal; Max-Age=0; Secure; HttpOnly; SameSite=Strict\r\n");
+      return;
+    }
+    std::string error;
+    const auto cookie = terminal::Open(session, &error);
+    if (cookie.empty()) { Error(tls, 503, error); return; }
+    if (!TerminalAuthorized(session)) {
+      terminal::Close(session);
+      Error(tls, 401, "This computer is no longer authorized."); return;
+    }
+    result["url"] = "/terminal/";
+    Reply(tls, 200, JsonText(result), "application/json",
+          "Set-Cookie: aera_terminal=" + cookie + "; Path=/terminal; Secure; HttpOnly; SameSite=Strict\r\n");
+    return;
+  }
   if (request.method == "GET" && request.path == "/api/backups/icons") {
     Json::Value result;
     {
@@ -2043,6 +2121,7 @@ bool SetEnabled(bool enabled, int port, bool manual) {
     return true;
   }
   if (!g_running.exchange(false)) return true;
+  terminal::Stop();
   storage::Channel().Stop();
   g_generation.fetch_add(1);
   StopNetwork();
@@ -2118,6 +2197,7 @@ bool NeedsUiAttention() {
 }
 void RefreshPlatformInfo() {
   Json::Value info;
+  info["terminal_available"] = terminal::Available();
   info["app_vault_available"] = aeraui::AppVaultInstalled();
   info["backup_block_bytes"] = Json::UInt64(storage::kBlock);
   info["backup_partitions"] = Json::Value(Json::arrayValue);

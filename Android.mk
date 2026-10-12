@@ -71,6 +71,8 @@ LOCAL_C_INCLUDES += \
     external/jsoncpp/include
 
 ifeq ($(OF_ENABLE_WLAN),1)
+LOCAL_SRC_FILES += aera_remote/pc_terminal.cpp
+LOCAL_REQUIRED_MODULES += ttyd_src
 LOCAL_STATIC_LIBRARIES += libfusetwrp
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/fuse/include
 LOCAL_SRC_FILES += \
@@ -732,7 +734,7 @@ ifeq ($(BOARD_CACHEIMAGE_PARTITION_SIZE),)
     TWRP_REQUIRED_MODULES += recovery-persist recovery-refresh
 endif
 
-LOCAL_REQUIRED_MODULES += $(TWRP_REQUIRED_MODULES) aera-browser-jail
+LOCAL_REQUIRED_MODULES += $(TWRP_REQUIRED_MODULES) aera-browser-jail aera_htop
 
 include $(BUILD_EXECUTABLE)
 

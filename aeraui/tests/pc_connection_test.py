@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real HTTPS service against a fake installer, never a device."""
 import hashlib
+import base64
 import http.client
 import json
 import os
@@ -137,6 +138,108 @@ class PcConnectionTest(unittest.TestCase):
                 self.assertIs(connection.sock, original_socket)
         finally:
             connection.close()
+
+    def test_01c_terminal_shell_and_operation_lock(self):
+        if not self.request("/api/status")[1].get("terminal_available"):
+            self.skipTest("AERA_TEST_TTYD is not configured")
+        self.assertEqual(self.request("/api/terminal/open", {}, token="")[0], 401)
+        self.assertEqual(self.request("/terminal/", raw=True, token="")[0], 403)
+        connection = http.client.HTTPSConnection("127.0.0.1", self.port, context=self.context, timeout=5)
+        connection.request("POST", "/api/terminal/open", b"{}",
+                           {"Authorization": "Bearer " + self.token})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        cookie_header = response.getheader("Set-Cookie")
+        self.assertIn("Secure; HttpOnly; SameSite=Strict", cookie_header)
+        cookie = cookie_header.split(";", 1)[0]
+        self.assertEqual(json.loads(response.read())["url"], "/terminal/")
+        connection.close()
+
+        def terminal_get(path, cookie_value=cookie):
+            conn = http.client.HTTPSConnection("127.0.0.1", self.port, context=self.context, timeout=5)
+            conn.request("GET", path, headers={"Cookie": cookie_value})
+            reply = conn.getresponse()
+            status, payload = reply.status, reply.read()
+            conn.close()
+            return status, payload
+
+        status, page = terminal_get("/terminal/")
+        self.assertEqual(status, 200)
+        self.assertGreater(len(page), 10000)
+        self.assertEqual(terminal_get("/terminal/", "aera_terminal=" + "0" * 64)[0], 403)
+        status, payload = terminal_get("/terminal/token")
+        self.assertEqual(status, 200)
+        credential = json.loads(payload)["token"]
+        sock = self.context.wrap_socket(socket.create_connection(("127.0.0.1", self.port)),
+                                        server_hostname="localhost")
+        sock.settimeout(5)
+        key = base64.b64encode(os.urandom(16)).decode()
+        sock.sendall((f"GET /terminal/ws HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+                      f"Origin: https://127.0.0.1:{self.port}\r\nCookie: {cookie}\r\n"
+                      "Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"
+                      f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Protocol: tty\r\n\r\n").encode())
+        buffered = bytearray()
+
+        def take(count):
+            while len(buffered) < count:
+                data = sock.recv(32768)
+                if not data:
+                    raise EOFError("Terminal disconnected")
+                buffered.extend(data)
+            result = bytes(buffered[:count])
+            del buffered[:count]
+            return result
+
+        while b"\r\n\r\n" not in buffered:
+            buffered.extend(sock.recv(32768))
+        headers, remainder = buffered.split(b"\r\n\r\n", 1)
+        buffered[:] = remainder
+        self.assertIn(b"101", headers.split(b"\r\n", 1)[0])
+
+        def send_frame(data):
+            mask = os.urandom(4)
+            length = len(data)
+            header = bytes((0x82, 0x80 | length)) if length < 126 else bytes((0x82, 0xfe)) + length.to_bytes(2, "big")
+            sock.sendall(header + mask + bytes(value ^ mask[i % 4] for i, value in enumerate(data)))
+
+        def output_until(expected):
+            output = b""
+            while expected not in output:
+                head = take(2)
+                length = head[1] & 127
+                if length == 126:
+                    length = int.from_bytes(take(2), "big")
+                elif length == 127:
+                    length = int.from_bytes(take(8), "big")
+                self.assertLess(length, 1024 * 1024)
+                payload = take(length)
+                if head[0] & 15 == 8:
+                    raise EOFError("Terminal closed its WebSocket")
+                if payload[:1] == b"0":
+                    output += payload[1:]
+            return output
+
+        try:
+            send_frame(json.dumps({"AuthToken": credential, "columns": 90, "rows": 24}).encode())
+            send_frame(b"0printf '\\101\\105\\122\\101\\137\\117\\113\\n'\r")
+            self.assertIn(b"AERA_OK", output_until(b"AERA_OK"))
+            send_frame(b'1{"columns":100,"rows":30}')
+            send_frame(b"0stty size\r")
+            self.assertIn(b"30 100", output_until(b"30 100"))
+            send_frame(b"0sleep 30\r")
+            time.sleep(.1)
+            send_frame(b"0\x03")
+            send_frame(b"0printf '\\101\\106\\124\\105\\122\\137\\111\\116\\124\\n'\r")
+            self.assertIn(b"AFTER_INT", output_until(b"AFTER_INT"))
+            self.command("busy")
+            self.assertEqual(self.request("/api/terminal/open", {})[0], 200)
+            self.assertEqual(terminal_get("/terminal/")[0], 200)
+            send_frame(b"0printf '\\102\\125\\123\\131\\137\\117\\113\\n'\r")
+            self.assertIn(b"BUSY_OK", output_until(b"BUSY_OK"))
+        finally:
+            sock.close()
+            self.command("idle")
+            self.assertEqual(self.request("/api/terminal/close", {})[0], 200)
 
     def test_02_partial_or_bad_upload_cannot_install(self):
         data = b"fixture-data" * 8192
