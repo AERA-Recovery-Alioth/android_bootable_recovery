@@ -36,6 +36,10 @@
 #include <sys/wait.h>
 #include <sys/vfs.h>
 #include <unistd.h>
+#ifndef AERA_PC_HOST_TEST
+#include <selinux/selinux.h>
+#include "../mtp/ffs/MtpUtils.h"
+#endif
 #include <json/json.h>
 #include <openssl/ec.h>
 #include <openssl/evp.h>
@@ -739,6 +743,43 @@ bool FileName(const std::string &name) {
       name.find('/') == std::string::npos && std::none_of(name.begin(), name.end(),
         [](unsigned char c) { return c < 32 || c == 127; });
 }
+bool SetPublicStorageMetadata(const std::string &path, const std::string &parent) {
+  const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) return false;
+  struct stat info{};
+  struct statfs filesystem{};
+  bool okay = fstat(fd, &info) == 0 && (S_ISREG(info.st_mode) || S_ISDIR(info.st_mode)) &&
+      fstatfs(fd, &filesystem) == 0;
+  // FAT, exFAT and FUSE expose mount-controlled permissions, not inode ownership.
+  const bool emulated = filesystem.f_type == 0x4d44 || filesystem.f_type == 0x2011bab0 ||
+      filesystem.f_type == 0x65735546;
+  if (okay && !emulated) {
+#ifdef AERA_PC_HOST_TEST
+    const gid_t group = getgid();  // Host fixture has no Android media_rw group.
+    const mode_t mode = S_ISDIR(info.st_mode) ? 0775 : 0664;
+#else
+    const gid_t group = FILE_GROUP;
+    const mode_t mode = S_ISDIR(info.st_mode) ? DIR_PERM : FILE_PERM;
+#endif
+    // Match Recovery MTP without changing the private transfer or TLS files.
+    okay = fchown(fd, getuid(), group) == 0 && fchmod(fd, mode) == 0;
+#ifndef AERA_PC_HOST_TEST
+    if (okay && is_selinux_enabled() > 0) {
+      const int directory = open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+      char *context = nullptr;
+      okay = directory >= 0 && fgetfilecon(directory, &context) >= 0;
+      if (okay) okay = fsetfilecon(fd, context) == 0;
+      if (context) freecon(context);
+      if (directory >= 0) close(directory);
+    }
+#else
+    (void)parent;
+#endif
+    if (okay) okay = fsync(fd) == 0;
+  }
+  if (close(fd) != 0) okay = false;
+  return okay;
+}
 bool MoveNoReplace(const std::string &from, const std::string &to) {
 #if defined(SYS_renameat2)
   if (syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), 1 /* RENAME_NOREPLACE */) == 0)
@@ -867,9 +908,14 @@ void FileCommand(SSL *tls, const std::string &command, const Json::Value &body, 
   } else {
     if (body.get("confirm", false) != true) { Error(tls, 400, "Confirm the file operation."); return; }
     if (command == "/api/files/mkdir") {
+      const auto folder = body["name"].isString() ? path + "/" + body["name"].asString() : "";
       if (!S_ISDIR(info.st_mode) || !body["name"].isString() || !FileName(body["name"].asString()) ||
-          mkdir((path + "/" + body["name"].asString()).c_str(), 0755) != 0) {
+          mkdir(folder.c_str(), 0775) != 0) {
         Error(tls, 409, "Could not create folder. Its name may already exist."); return;
+      }
+      if (!SetPublicStorageMetadata(folder, path)) {
+        rmdir(folder.c_str());
+        Error(tls, 409, "Could not set storage permissions for the new folder."); return;
       }
     } else if (command == "/api/files/delete") {
       if (path == root || (!S_ISREG(info.st_mode) && !S_ISDIR(info.st_mode)) ||
@@ -1614,8 +1660,13 @@ void Handle(SSL *tls, unsigned generation) {
         if (!realpath(directory.c_str(), parent) || directory != parent ||
             !ChildOf(directory, g_transfer.root) || stat(directory.c_str(), &folder) != 0 ||
             !S_ISDIR(folder.st_mode) || lstat(g_transfer.path.c_str(), &payload) != 0 ||
-            !S_ISREG(payload.st_mode) || uint64_t(payload.st_size) != g_transfer.bytes ||
-            !MoveNoReplace(g_transfer.path, g_transfer.save_path)) {
+            !S_ISREG(payload.st_mode) || uint64_t(payload.st_size) != g_transfer.bytes) {
+          Error(tls, 409, "Could not save without overwriting an existing file. The verified transfer is still available."); return;
+        }
+        if (!SetPublicStorageMetadata(g_transfer.path, directory)) {
+          Error(tls, 409, "Could not set Android storage permissions. The verified transfer is still available."); return;
+        }
+        if (!MoveNoReplace(g_transfer.path, g_transfer.save_path)) {
           Error(tls, 409, "Could not save without overwriting an existing file. The verified transfer is still available."); return;
         }
         RemoveTransferFiles(g_transfer);

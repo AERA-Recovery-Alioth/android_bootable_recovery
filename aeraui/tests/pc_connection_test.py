@@ -3,10 +3,12 @@
 import hashlib
 import http.client
 import json
+import os
 import pathlib
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -328,20 +330,28 @@ class PcConnectionTest(unittest.TestCase):
         folder = self.root / "browser-files"
         status, _ = self.request("/api/files/mkdir", {"path": str(self.root), "name": folder.name, "confirm": True})
         self.assertEqual(status, 200)
+        self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o775)
+        self.assertEqual((folder.stat().st_uid, folder.stat().st_gid), (os.getuid(), os.getgid()))
         self.assertEqual(self.request("/api/files/list", {"path": "/proc"})[0], 409)
         self.assertEqual(self.request("/api/files/mkdir", {"path": str(folder), "name": "../escape", "confirm": True})[0], 409)
         data = b"plain file data, not an installer" * 4096
         status, job = self.prepare(data, kind="file", name="notes.txt", folder=str(folder))
         self.assertEqual(status, 200)
         self.assertEqual(self.request("/api/upload/" + job["id"], data, "PUT")[0], 200)
+        staged = self.root / "AERA" / "PCTransfers" / job["id"] / "payload.img"
+        self.assertEqual(stat.S_IMODE(staged.stat().st_mode), 0o600)
         self.assertFalse((folder / "notes.txt").exists())
         self.assertEqual(self.request("/api/install", {"id": job["id"], "confirm": True})[1]["phase"], "completed")
         self.assertEqual((folder / "notes.txt").read_bytes(), data)
+        saved = (folder / "notes.txt").stat()
+        self.assertEqual(stat.S_IMODE(saved.st_mode), 0o664)
+        self.assertEqual((saved.st_uid, saved.st_gid), (os.getuid(), os.getgid()))
         status, empty = self.prepare(b"", kind="file", name="empty.txt", folder=str(folder))
         self.assertEqual(status, 200)
         self.assertEqual(self.request("/api/upload/" + empty["id"], b"", "PUT")[0], 200)
         self.assertEqual(self.request("/api/install", {"id": empty["id"], "confirm": True})[1]["phase"], "completed")
         self.assertEqual((folder / "empty.txt").read_bytes(), b"")
+        self.assertEqual(stat.S_IMODE((folder / "empty.txt").stat().st_mode), 0o664)
         self.assertEqual(self.request("/api/files/delete", {"path": str(folder / "empty.txt"), "confirm": True})[0], 200)
         self.assertEqual(self.prepare(data, kind="file", name="notes.txt", folder=str(folder))[0], 409)
         status, listing = self.request("/api/files/list", {"path": str(folder)})
