@@ -1,4 +1,5 @@
 #include "wlan.hpp"
+#include "aera_wlan_mac_file.hpp"
 
 #include <arpa/inet.h>
 #include <cctype>
@@ -1169,29 +1170,35 @@ bool Wlan::EnsureTmpLayout() {
 }
 
 bool Wlan::EnsureSupplicantConf() {
-    // Path for vendor config
-    const std::string conf = "/vendor/etc/wifi/wpa_supplicant.conf";
-
-    if (FileExists(conf)) {
-        return true;
-    }
-
-    // If the file doesn't exist, try to create a basic one if needed
-    std::ostringstream ss;
-    ss << "ctrl_interface=/data/misc/wifi/sockets\n";
-    ss << "update_config=1\n";
-    ss << "country=US\n";
-
-    return WriteFile(conf, ss.str());
+    const std::string conf = GetSupplicantConf();
+    if (FileExists(conf)) return true;
+    LOGERR("WLAN: native supplicant configuration is missing: %s\n", conf.c_str());
+    return false;
 }
 
 bool Wlan::StartSupplicant() {
-    EnsureSupplicantConf();
-    MkdirRecursive(GetCtrlDir());
-    return StartInitSupplicantService();
+    if (!MkdirRecursive(GetCtrlDir())) return false;
+    // Native init owns driver startup and configuration provisioning.
+    if (!StartInitSupplicantService()) return false;
+    return EnsureSupplicantConf();
 }
 
 bool Wlan::PrepareStableMacFirmware() {
+    char factory_path[PROPERTY_VALUE_MAX] = {0};
+    property_get("ro.aera.wlan.factory_mac_file", factory_path, "");
+    std::string factory_raw, factory;
+    const bool factory_valid = factory_path[0] && ReadFile(factory_path, factory_raw) &&
+        aera::wlan::NormalizeMacFile(factory_raw, factory);
+    if (factory_valid) {
+        // The ROM firmware link exposes this read-only factory file directly.
+        std::string visible_factory;
+        if (ReadFile("/vendor/firmware/wlan/qca_cld/wlan_mac.bin", visible_factory) &&
+            visible_factory == factory) {
+            LOGINFO("WLAN: using validated factory MAC firmware read-only\n");
+            return true;
+        }
+    }
+
     char serial_prop[PROPERTY_VALUE_MAX] = {0};
     property_get("ro.serialno", serial_prop, "");
     std::string serial = serial_prop;
@@ -1200,7 +1207,7 @@ bool Wlan::PrepareStableMacFirmware() {
         serial = serial_prop;
     }
 
-    if (serial.empty()) {
+    if (serial.empty() && !factory_valid) {
         LOGERR("WLAN: cannot derive stable MAC: device serial is empty\n");
         return false;
     }
@@ -1231,7 +1238,7 @@ bool Wlan::PrepareStableMacFirmware() {
     for (int i = 0; i < 6; ++i)
         compact_address << std::setw(2) << static_cast<unsigned int>(mac[i]);
 
-    const std::string mac_file =
+    const std::string mac_file = factory_valid ? factory :
         "Intf0MacAddress=" + compact_address.str() + "\nEND\n";
     const std::vector<std::string> config_roots = {
         "/vendor/etc/wifi",
@@ -1320,10 +1327,10 @@ bool Wlan::PrepareStableMacFirmware() {
         if (!inserted_setting)
             output << setting << "=1\n";
 
-        if (WriteFile(path, output.str())) {
+        if (aera::wlan::WriteRamFile(path, output.str())) {
             configured = true;
         } else {
-            LOGERR("WLAN: cannot enable MAC file in %s\n", path.c_str());
+            LOGINFO("WLAN: MAC configuration left unchanged in %s\n", path.c_str());
         }
     }
 
@@ -1341,15 +1348,16 @@ bool Wlan::PrepareStableMacFirmware() {
         const size_t slash = path.find_last_of('/');
         if (slash == std::string::npos || !MkdirRecursive(path.substr(0, slash)))
             continue;
-        if (WriteFile(path, mac_file))
+        if (aera::wlan::WriteRamFile(path, mac_file))
             firmware_written = true;
     }
 
-    if (!configured || !firmware_written)
+    if (!firmware_written)
         return false;
 
-    LOGINFO("WLAN: prepared deterministic MAC %s for %zu Qualcomm profile(s)\n",
-            compact_address.str().c_str(), chip_names.size());
+    LOGINFO("WLAN: prepared %s MAC firmware in RAM for %zu Qualcomm profile(s); configuration %s\n",
+            factory_valid ? "factory" : "deterministic", chip_names.size(),
+            configured ? "updated" : "unchanged");
     return true;
 }
 
@@ -1796,7 +1804,10 @@ std::string Wlan::GetCtrlDir() {
 
 std::string Wlan::GetSupplicantConf() {
     std::string conf = DataManager::GetStrValue("tw_wlan_conf");
-    return conf.empty() ? DEFAULT_SUPP_CONF : conf;
+    if (!conf.empty()) return conf;
+    char configured[PROPERTY_VALUE_MAX] = {0};
+    property_get("ro.aera.wlan.supplicant_conf", configured, DEFAULT_SUPP_CONF);
+    return configured;
 }
 
 std::string Wlan::EscapeDoubleQuotes(const std::string& s) {
