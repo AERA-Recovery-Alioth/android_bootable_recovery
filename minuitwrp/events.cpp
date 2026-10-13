@@ -231,13 +231,13 @@ class InputForceFeedbackHaptics {
 
             char device_name[128] = {};
             ioctl(candidate, EVIOCGNAME(sizeof(device_name)), device_name);
-            if (strcmp(device_name, "qcom-hv-haptics") == 0) {
+            if (strcmp(device_name, "qcom-hv-haptics") == 0 ||
+                strcmp(device_name, "aw8697_haptic") == 0) {
                 if (fallback_fd >= 0) close(fallback_fd);
                 fd_ = candidate;
-                // Some Qualcomm HV haptics revisions expose FF_RUMBLE but
-                // reject its translated periodic waveform at upload time.
-                // Their native FF_CONSTANT path is the reliable direct-play
-                // interface, so prefer it whenever the driver advertises it.
+                // Prefer the built-in motor over external force-feedback devices.
+                // Qualcomm HV and AW8697 provide native FF_CONSTANT playback;
+                // rumble may require an unsupported periodic translation.
                 supports_rumble_ = rumble && !constant;
                 supports_constant_ = constant;
                 break;
