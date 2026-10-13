@@ -69,6 +69,7 @@ extern "C"
 #endif
 int gr_drm_release_imported_scanout_buffer(gr_surface buffer);
 int gr_drm_present(gr_surface buffer);
+int gr_drm_present_with_events(gr_surface buffer);
 gr_surface gr_drm_get_presented_surface(void);
 
 void gr_color(unsigned char r, unsigned char g, unsigned char b, unsigned char a);

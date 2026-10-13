@@ -50,6 +50,9 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <time.h>
+#include <algorithm>
+#include <chrono>
 
 #include <android-base/properties.h>
 
@@ -598,16 +601,16 @@ static int drm_enable_crtc(drmModeAtomicReqPtr atomic_req) {
   return setup_pipeline(atomic_req);
 }
 
-static void drm_blank(minui_backend* backend __unused, bool blank) {
+static int drm_set_blank(bool blank) {
   int ret = 0;
 
   if (blank == current_blank_state)
-    return;
+    return 0;
 
   drmModeAtomicReqPtr atomic_req = drmModeAtomicAlloc();
   if (!atomic_req) {
      printf("Atomic Alloc failed\n");
-     return;
+     return -ENOMEM;
   }
 
   if (blank)
@@ -626,7 +629,11 @@ static void drm_blank(minui_backend* backend __unused, bool blank) {
   }
 
   drmModeAtomicFree(atomic_req);
+  return ret;
+}
 
+static void drm_blank(minui_backend* backend __unused, bool blank) {
+  drm_set_blank(blank);
 }
 
 static void drm_destroy_surface(struct drm_surface *surface) {
@@ -937,7 +944,45 @@ static void disable_non_main_crtcs(int fd,
   drmModeAtomicFree(atomic_req);
 }
 
-static int update_plane_fb(uint32_t fb_id) {
+// Page-flip events establish when the previous scanout is reusable. Kernel
+// userdata carries a sequence value, never a pointer into a caller's stack.
+static uint64_t flip_sequence = 0;
+static uint64_t completed_flip_sequence = 0;
+static bool event_commits_enabled = true;
+static bool scanout_ownership_unknown = false;
+
+static void handle_page_flip(int, unsigned int, unsigned int, unsigned int,
+                             void* userdata) {
+  const uint64_t sequence = reinterpret_cast<uintptr_t>(userdata);
+  completed_flip_sequence = std::max(completed_flip_sequence, sequence);
+}
+
+static int wait_for_page_flip(uint64_t sequence) {
+  drmEventContext context{};
+  context.version = 2;
+  context.page_flip_handler = handle_page_flip;
+  timespec start{};
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  const int64_t deadline = static_cast<int64_t>(start.tv_sec) * 1000 +
+                           start.tv_nsec / 1000000 + 1000;
+  while (completed_flip_sequence < sequence) {
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    const int64_t remaining = deadline -
+        (static_cast<int64_t>(now.tv_sec) * 1000 + now.tv_nsec / 1000000);
+    if (remaining <= 0) return -ETIMEDOUT;
+    pollfd event{drm_fd, POLLIN, 0};
+    const int ready = poll(&event, 1, static_cast<int>(remaining));
+    if (ready < 0 && errno == EINTR) continue;
+    if (ready <= 0) return ready == 0 ? -ETIMEDOUT : -errno;
+    if (event.revents & (POLLERR | POLLHUP | POLLNVAL)) return -EIO;
+    if ((event.revents & POLLIN) && drmHandleEvent(drm_fd, &context) != 0)
+      return -EIO;
+  }
+  return 0;
+}
+
+static int update_plane_fb(uint32_t fb_id, bool page_flip_sync = false) {
   uint32_t i, prop_id;
 
   /* Set atomic req */
@@ -958,11 +1003,43 @@ static int update_plane_fb(uint32_t fb_id) {
     drmModeAtomicAddProperty(atomic_req, plane_res[i].plane->plane_id,
                              fb_prop_id, fb_id);
 
-  /* Commit changes */
   int32_t ret;
-  ret = drmModeAtomicCommit(drm_fd, atomic_req,
-                 DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+  if (page_flip_sync && event_commits_enabled) {
+    const uint64_t sequence = ++flip_sequence;
+    const auto submit_start = std::chrono::steady_clock::now();
+    ret = drmModeAtomicCommit(drm_fd, atomic_req,
+        DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
+        reinterpret_cast<void*>(static_cast<uintptr_t>(sequence)));
+    const auto wait_start = std::chrono::steady_clock::now();
+    if (ret == 0) {
+      scanout_ownership_unknown = true;
+      ret = wait_for_page_flip(sequence);
+    }
+    const auto wait_end = std::chrono::steady_clock::now();
+    static uint64_t submit_us = 0, event_us = 0;
+    static unsigned samples = 0;
+    if (ret == 0) {
+      submit_us += std::chrono::duration_cast<std::chrono::microseconds>(wait_start - submit_start).count();
+      event_us += std::chrono::duration_cast<std::chrono::microseconds>(wait_end - wait_start).count();
+      if (++samples == 120) {
+        printf("DRM flip timing: submission %.2f ms, event %.2f ms\n",
+               submit_us / 120000.0, event_us / 120000.0);
+        submit_us = event_us = samples = 0;
+      }
+    }
+    if (ret != 0) {
+      // A synchronous commit drains any accepted asynchronous work before
+      // the caller can reuse either scanout buffer. Never treat a timeout as
+      // successful presentation or continue with an unconfirmed buffer.
+      printf("DRM page-flip synchronization failed (%d); using blocking commits\n", ret);
+      event_commits_enabled = false;
+      ret = drmModeAtomicCommit(drm_fd, atomic_req, DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr);
+    }
+  } else {
+    ret = drmModeAtomicCommit(drm_fd, atomic_req, DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr);
+  }
 
+  if (ret == 0) scanout_ownership_unknown = false;
   drmModeAtomicFree(atomic_req);
 
   if (ret)
@@ -971,6 +1048,8 @@ static int update_plane_fb(uint32_t fb_id) {
   return ret;
 
 }
+
+static void drm_exit(minui_backend* backend);
 
 static GRSurface* drm_init(minui_backend* backend __unused) {
   drmModeRes* res = nullptr;
@@ -1184,8 +1263,23 @@ static GRSurface* drm_init(minui_backend* backend __unused) {
   prop_id = find_plane_prop_id(plane_res[0].plane->plane_id, "FB_ID", plane_res);
   fb_prop_id = prop_id;
 
-  drm_blank(nullptr, false);
-
+  if (drm_set_blank(false) != 0) {
+    drm_exit(nullptr);
+    return nullptr;
+  }
+#if defined(AERA_DRM_FIXED_REFRESH_RATE) && AERA_DRM_FIXED_REFRESH_RATE > 0
+  if (!(main_monitor_crtc->mode.type & DRM_MODE_TYPE_PREFERRED) &&
+      main_monitor_crtc->mode.vrefresh == AERA_DRM_FIXED_REFRESH_RATE) {
+    // Qualcomm continuous splash adopts the bootloader's panel state without
+    // sending the selected mode's panel-on commands. Complete that handoff,
+    // then perform a checked cold modeset for an explicitly requested override.
+    if (drm_set_blank(true) != 0 || drm_set_blank(false) != 0) {
+      drm_exit(nullptr);
+      return nullptr;
+    }
+    printf("DRM refresh override: completed cold panel modeset\n");
+  }
+#endif
   return draw_buf;
 }
 
@@ -1244,8 +1338,9 @@ extern "C" int gr_drm_import_scanout_buffer(const GRDrmBufferInfo* info,
 	}
 	surface->dma_buf_fd = fcntl(info->dma_buf_fd, F_DUPFD_CLOEXEC, 0);
 	if (surface->dma_buf_fd < 0) {
+		const int saved_errno = errno;
 		drm_destroy_surface(surface);
-		return -errno;
+		return -saved_errno;
 	}
 
 	uint32_t handles[4] = {surface->handle, 0, 0, 0};
@@ -1255,10 +1350,8 @@ extern "C" int gr_drm_import_scanout_buffer(const GRDrmBufferInfo* info,
 	                              info->drm_format, handles, pitches, offsets,
 	                              &surface->fb_id, 0);
 	if (ret != 0) {
-		drm_gem_close gem_close = {};
-		gem_close.handle = surface->handle;
-		drmIoctl(drm_fd, DRM_IOCTL_GEM_CLOSE, &gem_close);
-		free(surface);
+		// Import owns both the GEM handle and a duplicated dma-buf descriptor.
+		drm_destroy_surface(surface);
 		return ret;
 	}
 
@@ -1279,8 +1372,11 @@ extern "C" int gr_drm_release_imported_scanout_buffer(gr_surface buffer) {
 	for (auto it = imported_surfaces.begin(); it != imported_surfaces.end(); ++it) {
 		drm_surface* surface = *it;
 		if (buffer != static_cast<gr_surface>(&surface->base)) continue;
-		if (presented_surface == surface && drm_surfaces[0]) {
-			update_plane_fb(drm_surfaces[0]->fb_id);
+		if (scanout_ownership_unknown || presented_surface == surface) {
+			// Retain every imported buffer until a blocking replacement confirms
+			// that no accepted asynchronous commit still owns either scanout.
+			if (!drm_surfaces[0] || update_plane_fb(drm_surfaces[0]->fb_id) != 0)
+				return -EIO;
 			presented_surface = drm_surfaces[0];
 			presented_buffer = 0;
 		}
@@ -1291,7 +1387,7 @@ extern "C" int gr_drm_release_imported_scanout_buffer(gr_surface buffer) {
 	return -ENOENT;
 }
 
-int gr_drm_present(gr_surface buffer) {
+static int drm_present(gr_surface buffer, bool page_flip_sync) {
 	if (!buffer || drm_fd < 0) return -1;
 	drm_surface* surface = nullptr;
 	int index = -1;
@@ -1310,7 +1406,7 @@ int gr_drm_present(gr_surface buffer) {
 			}
 		}
 	}
-	if (!surface || update_plane_fb(surface->fb_id) != 0) return -1;
+	if (!surface || update_plane_fb(surface->fb_id, page_flip_sync) != 0) return -1;
 	presented_surface = surface;
 	if (index >= 0) {
 		presented_buffer = index;
@@ -1319,6 +1415,14 @@ int gr_drm_present(gr_surface buffer) {
 		presented_buffer = -1;
 	}
 	return 0;
+}
+
+int gr_drm_present(gr_surface buffer) {
+  return drm_present(buffer, false);
+}
+
+int gr_drm_present_with_events(gr_surface buffer) {
+  return drm_present(buffer, true);
 }
 
 gr_surface gr_drm_get_presented_surface(void) {
@@ -1340,7 +1444,20 @@ gr_surface gr_drm_get_presented_surface(void) {
 }
 
 static void drm_exit(minui_backend* backend __unused) {
-    drm_blank(nullptr, true);
+    // Always confirm pipeline disable, even if the cached blank state is true.
+    // Failure retains the DRM fd and every scanout until process teardown.
+    drmModeAtomicReqPtr request = drmModeAtomicAlloc();
+    if (!request) return;
+    int ret = drm_disable_crtc(request);
+    if (ret == 0)
+      ret = drmModeAtomicCommit(drm_fd, request, DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr);
+    drmModeAtomicFree(request);
+    if (ret != 0) {
+      printf("Retaining DRM resources after failed pipeline disable (%d)\n", ret);
+      return;
+    }
+    scanout_ownership_unknown = false;
+    current_blank_state = true;
     drmModeDestroyPropertyBlob(drm_fd, crtc_res.mode_blob_id);
 	for (drm_surface* surface : imported_surfaces)
 		drm_destroy_surface(surface);
@@ -1349,6 +1466,9 @@ static void drm_exit(minui_backend* backend __unused) {
     drm_destroy_surface(drm_surfaces[1]);
     close(drm_fd);
 	drm_fd = -1;
+    flip_sequence = completed_flip_sequence = 0;
+    event_commits_enabled = true;
+    drm_surfaces[0] = drm_surfaces[1] = nullptr;
 	presented_buffer = -1;
 	presented_surface = nullptr;
 }
