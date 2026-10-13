@@ -37,6 +37,7 @@ endif
 LOCAL_CFLAGS += -DPLATFORM_SDK_VERSION=$(PLATFORM_SDK_VERSION)
 
 LOCAL_SRC_FILES := \
+    aeraui/features/backup/bootguard_platform.cpp \
     twrp.cpp \
     fixContexts.cpp \
     twrpTar.cpp \

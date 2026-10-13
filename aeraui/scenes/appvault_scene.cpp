@@ -42,6 +42,7 @@
 #include "backup/app_vault.hpp"
 #include "backup/app_vault_progress.hpp"
 #include "backup/app_registration.hpp"
+#include "backup/bootguard.hpp"
 #include "backup/incremental_apks.hpp"
 #include "ui_components.hpp"
 #include "src/misc/cache/instance/lv_image_cache.h"
@@ -1036,6 +1037,35 @@ void Worker(State *state, Work work, std::vector<std::string> paths,
     arguments = {"snapshots", "--json", "--tag",
                  std::string(kTag) + "," + UserTag(user_id)};
   }
+  std::string restore_identity;
+  if (work == Work::kRestore) {
+    if (state->cancel.load()) { fail("App restore cancelled."); return; }
+    // Length prefixes preserve boundaries even when a path contains a newline.
+    std::string canonical;
+    const auto append = [&](const std::string &value) {
+      canonical += std::to_string(value.size()) + ":" + value;
+    };
+    append("aera-appvault-restore-v1");
+    append(state->repository);
+    append(state->restore_snapshot);
+    append(std::to_string(user_id));
+    auto ordered_paths = paths;
+    std::sort(ordered_paths.begin(), ordered_paths.end());
+    ordered_paths.erase(std::unique(ordered_paths.begin(), ordered_paths.end()), ordered_paths.end());
+    for (const auto &path : ordered_paths) append(path);
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned digest_size = 0;
+    if (EVP_Digest(canonical.data(), canonical.size(), digest, &digest_size,
+                   EVP_sha256(), nullptr) != 1 || digest_size != 32) {
+      fail("Cannot identify the app restore transaction."); return;
+    }
+    constexpr char hex[] = "0123456789abcdef";
+    for (unsigned i = 0; i < digest_size; ++i) {
+      restore_identity += hex[digest[i] >> 4];
+      restore_identity += hex[digest[i] & 15];
+    }
+    if (!appvault::bootguard::Arm(restore_identity, output)) { fail(output); return; }
+  }
   int result = RunRestic(state, arguments, output);
   if (!result && work == Work::kRestore) {
     if (state->cancel.load()) { result = -1; output = "App restore cancelled."; }
@@ -1043,7 +1073,28 @@ void Worker(State *state, Work work, std::vector<std::string> paths,
       state->work_progress.store(99);
       if (state->remote_progress)
         state->remote_progress({99, "Registering restored apps in Android", {}, 0, 0, {}});
-      if (!registration.Finish(output)) result = -1;
+      const int data_fd = open("/data", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+      const bool data_synced = data_fd >= 0 && syncfs(data_fd) == 0;
+      if (data_fd >= 0) close(data_fd);
+      if (!data_synced) {
+        output = "Cannot synchronize restored app data; recovery remains required.";
+        result = -1;
+      } else if (!appvault::bootguard::MarkRegistration(restore_identity, output) ||
+                 !registration.Finish(output)) {
+        result = -1;
+      } else {
+        // Finish also repairs APK/data ownership and labels. Make those durable
+        // before allowing Android to consume the completed package generation.
+        const int repaired_fd = open("/data", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        const bool repaired_synced = repaired_fd >= 0 && syncfs(repaired_fd) == 0;
+        if (repaired_fd >= 0) close(repaired_fd);
+        if (!repaired_synced) {
+          output = "Cannot synchronize restored app security metadata; recovery remains required.";
+          result = -1;
+        } else if (!appvault::bootguard::Complete(restore_identity, output)) {
+          result = -1;
+        }
+      }
     }
   }
   if (result) fprintf(stderr, "App Backup Vault: %s\n", output.c_str());

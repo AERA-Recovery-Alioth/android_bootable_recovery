@@ -1,3 +1,4 @@
+#include "../aeraui/features/backup/bootguard_marker.hpp"
 /*
  * Copyright (C) 2016 The Android Open Source Project
  *
@@ -162,6 +163,12 @@ bool read_bootloader_message(bootloader_message* boot, std::string* err) {
 
 bool write_bootloader_message_to(const bootloader_message& boot, const std::string& misc_blk_device,
                                  std::string* err) {
+  bootloader_message current{};
+  if (!read_bootloader_message_from(&current, misc_blk_device, err)) return false;
+  if (aeraui::appvault::bootguard::HasProtectedMarker(current)) {
+    *err = "An interrupted App Vault restore protects the bootloader message.";
+    return false;
+  }
   return write_misc_partition(&boot, sizeof(boot), misc_blk_device,
                               BOOTLOADER_MESSAGE_OFFSET_IN_MISC, err);
 }
@@ -172,6 +179,13 @@ bool write_bootloader_message(const bootloader_message& boot, std::string* err) 
     return false;
   }
   return write_bootloader_message_to(boot, misc_blk_device, err);
+}
+
+bool write_appvault_bootguard_message(const bootloader_message& boot, std::string* err) {
+  std::string device = get_misc_blk_device(err);
+  if (device.empty()) return false;
+  return write_misc_partition(&boot, sizeof(boot), device,
+                              BOOTLOADER_MESSAGE_OFFSET_IN_MISC, err);
 }
 
 bool clear_bootloader_message(std::string* err) {

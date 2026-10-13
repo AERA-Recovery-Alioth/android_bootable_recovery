@@ -20,6 +20,7 @@
 
 */
 
+#include "aeraui/features/backup/bootguard.hpp"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
@@ -1081,6 +1082,10 @@ void TWFunc::Update_Log_File(void) {
 
 void TWFunc::Clear_Bootloader_Message() {
 	std::string err;
+	if (aeraui::appvault::bootguard::PreserveBootMessage(err)) {
+		LOGINFO("Preserving app restore recovery boot guard: %s\n", err.c_str());
+		return;
+	}
 	if (!clear_bootloader_message(&err)) {
 	   LOGINFO("%s\n", err.c_str());
 	}
@@ -1097,6 +1102,13 @@ void TWFunc::Update_Intent_File(string Intent)
 // reboot: Reboot the system. Return -1 on error, no return on success
 int TWFunc::tw_reboot(RebootCommand command)
 {
+	if (command == rb_system || command == rb_current) {
+		std::string guard_error;
+		if (!aeraui::appvault::bootguard::BeginSystemBoot(guard_error)) {
+			LOGERR("%s\n", guard_error.c_str());
+			return -1;
+		}
+	}
 	DataManager::Flush();
 	Update_Log_File();
 

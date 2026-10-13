@@ -19,6 +19,7 @@
 	along with TWRP.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include "aeraui/features/backup/bootguard.hpp"
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
@@ -744,6 +745,12 @@ int main(int argc, char **argv) {
 	static std::thread battery_monitor(monitorBatteryInBackground);
 
 	twrpAdbBuFifo *adb_bu_fifo = new twrpAdbBuFifo();
+	std::string restore_guard_error;
+	const auto restore_guard = aeraui::appvault::bootguard::Inspect(restore_guard_error);
+	if (restore_guard != aeraui::appvault::bootguard::State::Clear) {
+		gui_msg(Msg("app_restore_interrupted=An interrupted app restore requires recovery. Complete the same restore before booting Android."));
+		LOGINFO("App restore boot guard: %s\n", restore_guard_error.c_str());
+	}
 	TWFunc::Clear_Bootloader_Message();
 
 	if (startup.Get_Fastboot_Mode()) {

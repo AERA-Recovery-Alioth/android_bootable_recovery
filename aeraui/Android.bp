@@ -63,6 +63,8 @@ cc_library_static {
         "features/backup/android_packages_xml.cpp",
         "features/backup/app_registration.cpp",
         "features/backup/app_registration_io.cpp",
+        "features/backup/registration_journal.cpp",
+        "features/backup/bootguard.cpp",
         "features/backup/incremental_apks.cpp",
         "features/browser/launcher.cpp",
         "features/browser/runtime.cpp",
@@ -151,6 +153,7 @@ cc_library_static {
     include_dirs: [
         "bootable/recovery",
         "system",
+        "bootable/recovery/bootloader_message/include",
         "bootable/recovery/libpixelflinger/include",
         "bootable/recovery/minuitwrp/include",
         "bootable/recovery/twrpinstall/include",

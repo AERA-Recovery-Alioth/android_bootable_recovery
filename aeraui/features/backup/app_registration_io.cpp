@@ -5,6 +5,8 @@
 #include "android_packages_xml.hpp"
 #include "incremental_apks.hpp"
 #include "app_registration.hpp"
+#include "staging_file.hpp"
+#include "registration_journal.hpp"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -90,30 +92,32 @@ bool PrivateDirectory(const std::string& path, std::string& error) {
              : Fail(error, "Unsafe app metadata folder", path);
 }
 
-bool Write(const std::string& path, const std::string& bytes, mode_t mode, uid_t uid, gid_t gid,
-           const std::string& context, std::string& error) {
-  const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, mode);
-  if (fd < 0) return Fail(error, "Cannot stage app registration", path);
+bool WriteContents(int fd, const std::string& path, const std::string& bytes, mode_t mode,
+                   uid_t uid, gid_t gid, const std::string& context, std::string& error) {
   size_t offset = 0;
   bool okay = true;
   while (offset < bytes.size()) {
     const ssize_t count = write(fd, bytes.data() + offset, bytes.size() - offset);
     if (count < 0 && errno == EINTR) continue;
-    if (count <= 0) {
-      okay = false;
-      break;
-    }
-    offset += count;
+    if (count <= 0) { okay = false; break; }
+    offset += static_cast<size_t>(count);
   }
   if (okay)
     okay = fchown(fd, uid, gid) == 0 && fchmod(fd, mode) == 0 &&
            (context.empty() || fsetfilecon(fd, context.c_str()) == 0) && fsync(fd) == 0;
-  close(fd);
+  if (close(fd) != 0) okay = false;
   if (!okay) {
     unlink(path.c_str());
     return Fail(error, "Cannot save app registration", path);
   }
   return true;
+}
+
+bool Stage(const std::string& target, const std::string& bytes, mode_t mode, uid_t uid, gid_t gid,
+           const std::string& context, std::string& temporary, std::string& error) {
+  const int fd = CreateStagingFile(target, temporary);
+  if (fd < 0) return Fail(error, "Cannot stage app registration", target);
+  return WriteContents(fd, temporary, bytes, mode, uid, gid, context, error);
 }
 
 int Sdk(const XMLDocument& database) {
@@ -126,6 +130,7 @@ int Sdk(const XMLDocument& database) {
 }
 
 bool PackageDatabase(XMLDocument& database, std::string& error) {
+  if (!journal::Replay("/data/system", error)) return false;
   if (access("/data/system/packages-backup.xml", F_OK) == 0)
     return Fail(error, "Android has an unfinished package transaction; boot Android first");
   if (!Load("/data/system/packages.xml", database, error)) return false;
@@ -135,6 +140,7 @@ bool PackageDatabase(XMLDocument& database, std::string& error) {
 }
 
 bool Users(std::map<int, std::unique_ptr<XMLDocument>>& users, std::string& error) {
+  if (!journal::Replay("/data/system", error)) return false;
   DIR* directory = opendir("/data/system/users");
   if (!directory) return Fail(error, "Cannot read Android users");
   bool okay = true;
@@ -291,50 +297,24 @@ bool SyncParent(const std::string& path) {
 }
 
 bool Commit(std::vector<DatabaseFile>& files, std::string& error) {
-  // Stage every main file and its Android reserve copy before changing anything.
-  // User restrictions are committed first; the global package registry is last.
-  std::vector<std::pair<DatabaseFile*, std::string>> staged;
-  for (auto& file : files) {
+  if (!journal::Replay("/data/system", error)) return false;
+  std::vector<journal::Replacement> replacements;
+  for (const auto& file : files) {
     std::string current;
     if (!Read(file.path, current, error) || current != file.original)
       return Fail(error, "Android package database changed during restore; retry");
-  }
-  for (auto& file : files) {
-    for (const auto& target : { file.path + ".reservecopy", file.path }) {
-      const std::string temporary = target + ".aera-new";
-      if (!Write(temporary, file.replacement, file.mode, file.uid, file.gid, file.context, error)) {
-        for (const auto& entry : staged) unlink((entry.second + ".aera-new").c_str());
-        return false;
-      }
-      staged.emplace_back(&file, target);
+    for (const auto& target : {file.path + ".reservecopy", file.path}) {
+      if (target.compare(0, 13, "/data/system/") != 0)
+        return Fail(error, "Unexpected Android package database path");
+      replacements.push_back({target.substr(13), file.replacement, file.context,
+                              file.mode, file.uid, file.gid, target == file.path, file.original});
     }
   }
-  std::vector<std::pair<DatabaseFile*, std::string>> committed;
-  for (const auto& entry : staged) {
-    if (rename((entry.second + ".aera-new").c_str(), entry.second.c_str()) ||
-        !SyncParent(entry.second)) {
-      bool rollback = true;
-      // Reserve copies receive the old valid XML too, rather than remaining stale.
-      committed.push_back(entry);
-      for (const auto& old : committed) {
-        const std::string temporary = old.second + ".aera-rollback";
-        std::string ignored;
-        rollback = Write(temporary, old.first->original, old.first->mode, old.first->uid,
-                         old.first->gid, old.first->context, ignored) &&
-                   rename(temporary.c_str(), old.second.c_str()) == 0 && SyncParent(old.second) &&
-                   rollback;
-      }
-      for (const auto& pending : staged) unlink((pending.second + ".aera-new").c_str());
-      return Fail(
-          error,
-          rollback
-              ? "Could not commit app registration; original database restored"
-              : "App registration rollback failed; do not boot Android and keep the recovery log");
-    }
-    committed.push_back(entry);
-  }
-  return true;
+  // A durable redo journal replaces best-effort rollback. An interrupted commit
+  // resumes before the next AERA package read, and fails closed on external edits.
+  return journal::Commit("/data/system", replacements, error);
 }
+
 }  // namespace
 
 bool CaptureRegistration(int user, const std::vector<std::string>& packages,
@@ -402,18 +382,20 @@ bool CaptureRegistration(int user, const std::vector<std::string>& packages,
     const std::string folder = std::string(kMetadataRoot) + "/" + std::to_string(user) + "/" + name;
     if (!PrivateDirectory(folder, error)) return false;
     const std::string path = folder + "/registration.xml";
-    const std::string temporary = path + ".new";
-    if (!Write(temporary, Xml(metadata), 0600, 0, 0, {}, error)) return false;
+    std::string temporary;
+    if (!Stage(path, Xml(metadata), 0600, 0, 0, {}, temporary, error)) return false;
     if (rename(temporary.c_str(), path.c_str())) {
       unlink(temporary.c_str());
       return Fail(error, "Cannot save app metadata", path);
     }
+    if (!SyncParent(path)) return Fail(error, "Cannot synchronize app metadata", path);
     metadata_paths.push_back(folder);
   }
   return true;
 }
 
 bool RegisteredApkDirectories(std::vector<std::string>& paths, std::string& error) {
+  if (!journal::Replay("/data/system", error)) return false;
   XMLDocument database;
   paths.clear();
   if (!Load("/data/system/packages.xml", database, error)) return false;

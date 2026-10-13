@@ -214,6 +214,9 @@ bool update_bootloader_message_in_struct(bootloader_message* boot,
                                          const std::vector<std::string>& options);
 
 // Clear BCB.
+// App Vault transaction phase writes; ordinary callers must preserve a pending guard.
+bool write_appvault_bootguard_message(const bootloader_message& boot, std::string* err);
+
 bool clear_bootloader_message(std::string* err);
 
 // Writes the reboot-bootloader reboot reason to the bootloader_message.
