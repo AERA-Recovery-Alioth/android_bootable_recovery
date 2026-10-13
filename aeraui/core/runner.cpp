@@ -6,6 +6,7 @@
 #include "aeraui/runner.hpp"
 #include "operation_affinity.hpp"
 #include "performance_topology.hpp"
+#include "display_wake.hpp"
 #include <dirent.h>
 #include <vector>
 
@@ -342,11 +343,7 @@ bool HandleEvent(Engine& engine, InteractionBoost& performance,
             hardware.screenshot_chord = false;
             if (hardware.screen_off) {
                 hardware.woke_on_power = true;
-                engine.ShowLockScreen();
-                engine.SetSuspended(false);
-                performance.Boost();
-                engine.RunFrame();
-                aeraScreenTimer.Wake();
+                WakeLockedDisplay(engine, aeraScreenTimer, performance);
                 hardware.screen_off = false;
                 __android_log_print(ANDROID_LOG_INFO, kLogTag,
                                     "display woke into AERA lock screen");
@@ -537,8 +534,8 @@ RunResult RunLoop(bool fastboot_mode = false,
             }
         }
         if (hardware.screen_off && aera::pc::NeedsUiAttention()) {
-            engine.SetSuspended(false);
             aeraScreenTimer.Wake();
+            engine.SetSuspended(false);
             hardware.screen_off = false;
         }
         engine.SetMouseConnected(ev_has_mouse() != 0);

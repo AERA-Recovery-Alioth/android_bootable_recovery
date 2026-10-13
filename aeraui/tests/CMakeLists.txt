@@ -374,3 +374,7 @@ set_tests_properties(alioth_controls150_mounts_layout PROPERTIES ENVIRONMENT "AE
 add_executable(performance_topology_test performance_topology_test.cpp)
 target_compile_options(performance_topology_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_test(NAME recovery_cpu_policy_topology COMMAND performance_topology_test)
+
+add_executable(display_wake_test display_wake_test.cpp)
+target_compile_options(display_wake_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME recovery_display_wake_order COMMAND display_wake_test)
