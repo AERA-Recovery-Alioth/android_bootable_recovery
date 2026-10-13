@@ -5,6 +5,9 @@
 
 #include "aeraui/runner.hpp"
 #include "operation_affinity.hpp"
+#include "performance_topology.hpp"
+#include <dirent.h>
+#include <vector>
 
 #include <linux/input.h>
 #include <errno.h>
@@ -36,10 +39,6 @@ namespace aeraui {
 namespace {
 
 constexpr char kLogTag[] = "AERA UI";
-constexpr char kPrimeMinFrequency[] =
-    "/sys/devices/system/cpu/cpufreq/policy6/scaling_min_freq";
-constexpr char kPrimeMaxFrequency[] =
-    "/sys/devices/system/cpu/cpufreq/policy6/cpuinfo_max_freq";
 constexpr char kGpuMinPowerLevel[] =
     "/sys/class/kgsl/kgsl-3d0/min_pwrlevel";
 constexpr char kGpuPowerLevelCount[] =
@@ -84,13 +83,6 @@ class InteractionBoost final {
         affinity_valid_ = sched_getaffinity(0, sizeof(original_affinity_),
                                             &original_affinity_) == 0;
         if (affinity_valid_) operation_affinity::Remember(original_affinity_);
-        CPU_ZERO(&prime_affinity_);
-        const long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
-        if (cpu_count >= 2) {
-            CPU_SET(cpu_count - 1, &prime_affinity_);
-            CPU_SET(cpu_count - 2, &prime_affinity_);
-            prime_affinity_valid_ = true;
-        }
         DiscoverControls();
     }
 
@@ -105,14 +97,15 @@ class InteractionBoost final {
         // controls. Retry discovery after renderer initialization instead of
         // permanently disabling the GPU boost on that first ENOENT.
         DiscoverControls();
-        if (!active_ && prime_affinity_valid_)
-            sched_setaffinity(0, sizeof(prime_affinity_), &prime_affinity_);
+        if (!affinity_applied_ && prime_affinity_valid_)
+            affinity_applied_ = sched_setaffinity(0, sizeof(prime_affinity_),
+                                                  &prime_affinity_) == 0;
         // A vendor power service can restore the default floor after GPU
         // bring-up. Reassert at a low rate while the boot/interaction window
         // is active; never write sysfs once per rendered frame.
         if (!active_ || now >= next_reassert_ms_) {
             if (cpu_controls_valid_)
-                WriteControl(kPrimeMinFrequency, boost_cpu_min_);
+                WriteControl(cpu_min_path_.c_str(), boost_cpu_min_);
             if (gpu_controls_valid_)
                 WriteControl(kGpuMinPowerLevel, boost_gpu_level_);
             next_reassert_ms_ = now + 500;
@@ -126,10 +119,39 @@ class InteractionBoost final {
 
   private:
     void DiscoverControls() {
-        if (!cpu_controls_valid_) {
-            cpu_controls_valid_ =
-                ReadControl(kPrimeMinFrequency, &original_cpu_min_) &&
-                ReadControl(kPrimeMaxFrequency, &boost_cpu_min_);
+        if (!cpu_controls_valid_ && affinity_valid_) {
+            std::vector<performance::CpuPolicy> policies;
+            const char *root = "/sys/devices/system/cpu/cpufreq";
+            DIR *directory = opendir(root);
+            if (directory) {
+                while (const auto *entry = readdir(directory)) {
+                    const std::string name(entry->d_name);
+                    if (name.rfind("policy", 0) != 0) continue;
+                    performance::CpuPolicy policy;
+                    policy.path = std::string(root) + "/" + name;
+                    std::string cpus, frequency;
+                    if (!ReadControl((policy.path + "/related_cpus").c_str(), &cpus) ||
+                        !ReadControl((policy.path + "/cpuinfo_max_freq").c_str(), &frequency) ||
+                        !performance::ParseCpuList(cpus, &policy.cpus)) continue;
+                    const auto parsed = std::from_chars(frequency.data(),
+                        frequency.data() + frequency.size(), policy.max_frequency);
+                    if (parsed.ec != std::errc{} || parsed.ptr != frequency.data() + frequency.size()) continue;
+                    policies.push_back(policy);
+                }
+                closedir(directory);
+            }
+            performance::CpuPolicy selected;
+            if (performance::SelectCpuPolicy(policies, original_affinity_, &selected)) {
+                cpu_min_path_ = selected.path + "/scaling_min_freq";
+                if (ReadControl(cpu_min_path_.c_str(), &original_cpu_min_)) {
+                    boost_cpu_min_ = std::to_string(selected.max_frequency);
+                    prime_affinity_ = selected.cpus;
+                    cpu_controls_valid_ = prime_affinity_valid_ = true;
+                    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "CPU boost controls ready: %s, maximum %s kHz",
+                        selected.path.c_str(), boost_cpu_min_.c_str());
+                }
+            }
         }
         if (!gpu_controls_valid_) {
             std::string levels;
@@ -138,9 +160,8 @@ class InteractionBoost final {
                 ReadControl(kGpuPowerLevelCount, &levels);
             if (gpu_controls_valid_) {
                 const int count = std::max(1, atoi(levels.c_str()));
-                /* Dodge maps lower KGSL power-level numbers to faster clocks.
-                 * The upper-quarter level is 900 MHz on Adreno 830: enough
-                 * headroom for 120 Hz composition without forcing 1.10 GHz. */
+                // KGSL orders power levels from fastest to slowest. Keep an
+                // upper-quarter interaction floor and retain thermal limits.
                 boost_gpu_level_ = std::to_string((count - 1) / 4);
                 __android_log_print(ANDROID_LOG_INFO, kLogTag,
                                     "KGSL boost controls ready: level %s of %d",
@@ -154,16 +175,18 @@ class InteractionBoost final {
         if (gpu_controls_valid_)
             WriteControl(kGpuMinPowerLevel, original_gpu_level_);
         if (cpu_controls_valid_)
-            WriteControl(kPrimeMinFrequency, original_cpu_min_);
-        if (affinity_valid_)
+            WriteControl(cpu_min_path_.c_str(), original_cpu_min_);
+        if (affinity_applied_ && affinity_valid_)
             sched_setaffinity(0, sizeof(original_affinity_),
                               &original_affinity_);
         active_ = false;
+        affinity_applied_ = false;
         next_reassert_ms_ = 0;
     }
 
     cpu_set_t original_affinity_{};
     cpu_set_t prime_affinity_{};
+    std::string cpu_min_path_;
     std::string original_cpu_min_;
     std::string boost_cpu_min_;
     std::string original_gpu_level_;
@@ -172,6 +195,7 @@ class InteractionBoost final {
     uint64_t next_reassert_ms_ = 0;
     bool affinity_valid_ = false;
     bool prime_affinity_valid_ = false;
+    bool affinity_applied_ = false;
     bool cpu_controls_valid_ = false;
     bool gpu_controls_valid_ = false;
     bool active_ = false;
