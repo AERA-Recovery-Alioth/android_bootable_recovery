@@ -581,7 +581,7 @@ PluginScene BuildPluginScene(lv_obj_t *screen, ActionCallback callback, void *co
   lv_obj_set_pos(automatic_label, 0, 30);
   FitLabelToLines(automatic_label, (width - 24) / 2 - 140, 1, {&lv_font_montserrat_28, &lv_font_montserrat_24});
   state->toggle = lv_switch_create(state->automatic);
-  lv_obj_set_size(state->toggle, 110, 62);
+  SizeSwitch(state->toggle, 110, 62);
   lv_obj_align(state->toggle, LV_ALIGN_RIGHT_MID, 0, 0);
   lv_obj_set_style_bg_opa(state->toggle, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_set_style_bg_color(state->toggle, kMainLine, LV_PART_MAIN);

@@ -284,8 +284,8 @@ void ActionSheet(Files* state, const std::string& title, const std::string& deta
   const bool landscape = Landscape(state->screen);
   const int width =
       landscape ? std::min(1900, static_cast<int>(lv_obj_get_width(state->screen)) - 128) : 1312;
-  const int rows = static_cast<int>((actions.size() + 1) / 2);
-  const int height = std::min(landscape ? 1160 : 1280, 360 + rows * 150);
+  const int viewport_height = std::max(1, static_cast<int>(lv_obj_get_height(state->screen)) - 80);
+  const int height = std::min(landscape ? 1160 : 1280, viewport_height);
   auto* sheet = lv_obj_create(overlay);
   Panel(sheet, 44, kMainSheet);
   lv_obj_set_size(sheet, width, height);
@@ -296,25 +296,32 @@ void ActionSheet(Files* state, const std::string& title, const std::string& deta
 
   auto* heading = Label(sheet, title.c_str(), &lv_font_montserrat_48, kText);
   lv_obj_set_pos(heading, 48, 42);
-  SingleLineLabel(heading, width - 190, &lv_font_montserrat_48);
+  lv_obj_set_width(heading, width - 190);
+  lv_label_set_long_mode(heading, LV_LABEL_LONG_WRAP);
+  lv_obj_update_layout(heading);
   auto* subtitle = Label(sheet, detail.c_str(), &lv_font_montserrat_24, kMuted);
-  lv_obj_set_pos(subtitle, 48, 112);
-  SingleLineLabel(subtitle, width - 96, &lv_font_montserrat_24);
+  lv_obj_set_pos(subtitle, 48, std::max(112, static_cast<int>(
+      lv_obj_get_y(heading) + lv_obj_get_height(heading) + 16)));
+  lv_obj_set_width(subtitle, width - 96);
+  lv_label_set_long_mode(subtitle, LV_LABEL_LONG_WRAP);
+  lv_obj_update_layout(subtitle);
   auto* close = Button(sheet, LV_SYMBOL_CLOSE, [overlay] { CloseOverlay(overlay); });
   lv_obj_set_pos(close, width - 138, 28);
   lv_obj_set_size(close, 98, 98);
 
   const int gap = 20;
   const int button_width = (width - 96 - gap) / 2;
+  int row_y = std::max(186, static_cast<int>(
+      lv_obj_get_y(subtitle) + lv_obj_get_height(subtitle) + 28));
+  std::vector<lv_obj_t *> buttons;
   for (size_t index = 0; index < actions.size(); ++index) {
     MenuAction action = std::move(actions[index]);
     const int column = static_cast<int>(index % 2);
-    const int row = static_cast<int>(index / 2);
     auto* button = Button(sheet, "", [overlay, action] {
       CloseOverlay(overlay);
       action.action();
     });
-    lv_obj_set_pos(button, 48 + column * (button_width + gap), 186 + row * 150);
+    lv_obj_set_pos(button, 48 + column * (button_width + gap), row_y);
     lv_obj_set_size(button, button_width, 140);
     lv_obj_set_style_radius(button, 26, 0);
     if (action.destructive) {
@@ -327,10 +334,32 @@ void ActionSheet(Files* state, const std::string& title, const std::string& deta
     lv_obj_align(icon, LV_ALIGN_LEFT_MID, 28, 0);
     auto* label =
         Label(button, action.label, &lv_font_montserrat_32, action.destructive ? kRed : kText);
-    FitLabelToLines(label, button_width - 116, 1,
-                    { &lv_font_montserrat_32, &lv_font_montserrat_28,
-                      &lv_font_montserrat_24 });
+    lv_obj_set_width(label, button_width - 116);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_update_layout(label);
+    lv_obj_set_height(button, std::max(140,
+        static_cast<int>(lv_obj_get_height(label) + 32)));
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 92, 0);
+    buttons.push_back(button);
+    if (column == 1 || index + 1 == actions.size()) {
+      const size_t first = index - static_cast<size_t>(column);
+      int row_height = 140;
+      for (size_t i = first; i <= index; ++i) {
+        lv_obj_update_layout(buttons[i]);
+        row_height = std::max(row_height, static_cast<int>(lv_obj_get_height(buttons[i])));
+      }
+      for (size_t i = first; i <= index; ++i)
+        lv_obj_set_height(buttons[i], row_height);
+      row_y += row_height + gap;
+    }
+  }
+  lv_obj_set_height(sheet, std::min(height, row_y + 28));
+  lv_obj_align(sheet, landscape ? LV_ALIGN_CENTER : LV_ALIGN_BOTTOM_MID, 0,
+               landscape ? 0 : -40);
+  if (row_y + 28 > height) {
+    lv_obj_add_flag(sheet, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(sheet, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(sheet, LV_SCROLLBAR_MODE_AUTO);
   }
   AnimateEnter(sheet, 0, 34);
 }
@@ -349,7 +378,8 @@ void NameDialog(Files* state, const char* title, const char* placeholder,
   const int screen_width = lv_obj_get_width(state->screen);
   const int width = landscape ? std::min(1900, screen_width - 128)
                               : std::min(1312, screen_width - 80);
-  const int height = landscape ? 1250 : 1450;
+  const int height = std::min(landscape ? 1250 : 1450,
+                              static_cast<int>(lv_obj_get_height(state->screen)) - 80);
   const int margin = 48;
   const int button_height = 126;
   auto* sheet = lv_obj_create(overlay);

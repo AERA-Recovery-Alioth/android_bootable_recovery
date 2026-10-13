@@ -160,6 +160,17 @@ void BuildTerminalScene(lv_obj_t *screen, ActionCallback callback,
                          &lv_font_montserrat_24, kMuted);
   lv_obj_set_pos(subtitle, state->landscape ? 600 : 80,
                  state->landscape ? 220 : 332);
+  lv_obj_update_layout(heading);
+  if (!state->landscape) lv_obj_set_y(subtitle, std::max(332,
+      static_cast<int>(lv_obj_get_y(heading) + lv_obj_get_height(heading) + 16)));
+  // Terminal intentionally keeps its shell alive between scenes. Always expose
+  // an exit above the keyboard, including when gesture navigation is disabled.
+  auto *close = Button(screen, LV_SYMBOL_LEFT " Close terminal", [callback, context] {
+    if (callback != nullptr) callback(Action::kSettings, context);
+  });
+  lv_obj_align(close, LV_ALIGN_TOP_RIGHT, -80,
+               state->landscape ? 196 : 238);
+  lv_obj_set_size(close, 470, 104);
   auto *live = Kicker(screen, "LIVE RECOVERY SHELL", kGreen);
   lv_obj_align(live, LV_ALIGN_TOP_RIGHT, -80,
                state->landscape ? 286 : 342);

@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 
 #include <lvgl.h>
 
@@ -64,6 +65,10 @@ inline lv_color_t kAccentPressed = Color(0x0aa8db);
 inline lv_color_t kAccentSoft = Color(0x17343d);
 inline lv_color_t kMainSelected = Color(0x30434a);
 inline int kInterfaceSize = 1;
+inline int kDeviceFontScale = 100;
+// Independent geometry profile: readable text and physical controls are distinct.
+inline int kDeviceControlScale = 100;
+inline int ControlSize(int value) { return value * kDeviceControlScale / 100; }
 inline int kSurfaceStyle = 0;
 inline int kAppearanceMode = 0;
 
@@ -99,7 +104,7 @@ inline const lv_font_t *UiFont(const lv_font_t *font) {
     else if (font == &lv_font_montserrat_18) selected = &lv_font_montserrat_24;
     else if (font == &lv_font_montserrat_16) selected = &lv_font_montserrat_20;
   }
-  return fonts::WithLanguageFallback(selected);
+  return fonts::ScaledUiFont(selected, kDeviceFontScale);
 }
 
 inline bool IsLightMode() { return kLightMode; }
@@ -237,12 +242,33 @@ inline void Clear(lv_obj_t *object) {
   lv_obj_set_style_pad_all(object, 0, 0);
 }
 
+inline bool IsPrivateUseIcon(const char *text) {
+  if (!text || std::char_traits<char>::length(text) != 3) return false;
+  const auto a = static_cast<unsigned char>(text[0]);
+  const auto b = static_cast<unsigned char>(text[1]);
+  const auto c = static_cast<unsigned char>(text[2]);
+  if ((a & 0xf0) != 0xe0 || (b & 0xc0) != 0x80 || (c & 0xc0) != 0x80)
+    return false;
+  const unsigned codepoint = ((a & 0x0f) << 12) | ((b & 0x3f) << 6) | (c & 0x3f);
+  return codepoint >= 0xe000 && codepoint <= 0xf8ff;
+}
+inline void SizeSwitch(lv_obj_t *toggle, int width = 108, int height = 60) {
+  lv_obj_set_size(toggle, ControlSize(width), ControlSize(height));
+}
+
 inline lv_obj_t *Label(lv_obj_t *parent, const char *text,
                        const lv_font_t *font, lv_color_t color) {
   lv_obj_t *label = lv_label_create(parent);
   i18n::BindLabel(label, text);
   lv_obj_set_style_text_font(label, UiFont(font), 0);
   lv_obj_set_style_text_color(label, color, 0);
+  // LVGL symbols come from unscaled bitmap fallback fonts. Scale only a single
+  // private-use glyph, never translated text or a mixed icon/text button label.
+  if (IsPrivateUseIcon(text)) {
+    lv_obj_set_style_transform_pivot_x(label, LV_PCT(50), 0);
+    lv_obj_set_style_transform_pivot_y(label, LV_PCT(50), 0);
+    lv_obj_set_style_transform_scale(label, ControlSize(256), 0);
+  }
   return label;
 }
 
@@ -421,7 +447,7 @@ inline void AccentButton(lv_obj_t *object) {
 // slider theme can otherwise leave the rail transparent in the pull-down shade.
 inline void RangeSlider(lv_obj_t *slider) {
   NoScroll(slider);
-  lv_obj_set_ext_click_area(slider, 32);
+  lv_obj_set_ext_click_area(slider, ControlSize(32));
 
   lv_obj_set_style_bg_color(slider, kInset, LV_PART_MAIN);
   lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_MAIN);
@@ -441,7 +467,7 @@ inline void RangeSlider(lv_obj_t *slider) {
   lv_obj_set_style_border_width(slider, 6, LV_PART_KNOB);
   lv_obj_set_style_border_color(slider, kAccent, LV_PART_KNOB);
   lv_obj_set_style_border_opa(slider, LV_OPA_COVER, LV_PART_KNOB);
-  lv_obj_set_style_pad_all(slider, 18, LV_PART_KNOB);
+  lv_obj_set_style_pad_all(slider, ControlSize(18), LV_PART_KNOB);
   lv_obj_set_style_shadow_width(slider, 0, LV_PART_KNOB);
 }
 

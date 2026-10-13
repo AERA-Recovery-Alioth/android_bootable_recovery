@@ -1114,22 +1114,22 @@ void BuildMounts(Tools *state) {
 
       auto *name = Label(row, volume.name.c_str(), &lv_font_montserrat_32, kText);
       lv_obj_set_pos(name, 112, 29);
-      SingleLineLabel(name, row_width - 520, &lv_font_montserrat_32);
+      SingleLineLabel(name, row_width - 520 - (ControlSize(104) - 104), &lv_font_montserrat_32);
 
       auto *path = Label(row, volume.path.c_str(), &lv_font_montserrat_24,
                          is_mounted ? kMutedStrong : kMuted);
       lv_obj_set_pos(path, 112, 94);
-      SingleLineLabel(path, row_width - 520, &lv_font_montserrat_24);
+      SingleLineLabel(path, row_width - 520 - (ControlSize(104) - 104), &lv_font_montserrat_24);
 
       auto *status = Label(row, is_mounted ? "Mounted" : "Not mounted",
                            &lv_font_montserrat_24,
                            is_mounted ? kAccent : kMutedStrong);
       SingleLineLabel(status, 220, &lv_font_montserrat_24);
       lv_obj_set_style_text_align(status, LV_TEXT_ALIGN_RIGHT, 0);
-      lv_obj_align(status, LV_ALIGN_RIGHT_MID, -154, 0);
+      lv_obj_align(status, LV_ALIGN_RIGHT_MID, -(24 + ControlSize(104) + 26), 0);
 
       auto *toggle = lv_switch_create(row);
-      lv_obj_set_size(toggle, 104, 58);
+      SizeSwitch(toggle, 104, 58);
       lv_obj_align(toggle, LV_ALIGN_RIGHT_MID, -24, 0);
       lv_obj_remove_flag(toggle, LV_OBJ_FLAG_CLICKABLE);
       lv_obj_set_style_bg_opa(toggle, LV_OPA_COVER, LV_PART_MAIN);
@@ -2787,12 +2787,16 @@ void BuildPcConnection(Tools *state) {
         return ok;
       }, message);
   state->pc_switch = lv_obj_get_child(row, 2);
-  SettingsRow(state->list, 180, "Auto-enable PC connection", "Start after unlocking",
+  const int second_row_y = lv_obj_get_height(row) + 20;
+  auto *auto_row = SettingsRow(state->list, second_row_y, "Auto-enable PC connection", "Start after unlocking",
       RecoveryPcAutoEnable(), [](bool enabled) { return RecoverySetPcAutoEnable(enabled); },
       message);
+  lv_obj_set_y(message, second_row_y + lv_obj_get_height(auto_row) + 24);
+  lv_obj_update_layout(message);
   state->pc_details = lv_obj_create(state->list);
   Clear(state->pc_details);
-  lv_obj_set_pos(state->pc_details, 24, 432);
+  lv_obj_set_pos(state->pc_details, 24, std::max(432,
+      static_cast<int>(lv_obj_get_y(message) + lv_obj_get_height(message) + 24)));
   lv_obj_set_size(state->pc_details, lv_obj_get_width(state->list) - 48, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(state->pc_details, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(state->pc_details, 18, 0);
@@ -2956,6 +2960,8 @@ void BuildMenu(Tools *state) {
   // Utility cards scroll. About and Reboot are full-width destinations pinned
   // above Navigation, with About immediately above the final Reboot action.
   const bool landscape = Landscape(state->screen);
+  const int full_width = lv_obj_get_width(state->screen) - 128;
+  const int gap = landscape ? 24 : 32;
   state->list = Scroll(state->screen, landscape ? 340 : 452,
                        landscape ? 438 : 1900);
   struct Item { const char *icon, *title, *detail; Action action; };
@@ -2973,6 +2979,9 @@ void BuildMenu(Tools *state) {
     {"A", "About AERA", "Project identity, contributors and build information", Action::kAbout},
     {LV_SYMBOL_POWER, "Reboot", "Android, recovery, bootloader or power off", Action::kOpenReboot}}};
   size_t visible_index = 0;
+  std::vector<lv_obj_t *> utility_cards;
+  lv_obj_t *about_card = nullptr;
+  lv_obj_t *reboot_card = nullptr;
   for (const auto item : items) {
     if (item.action == Action::kRootManager && !root::Enabled()) continue;
     const size_t i = visible_index++;
@@ -2987,14 +2996,14 @@ void BuildMenu(Tools *state) {
     Interactive(card, kMainSelected);
     // These two deliberate destinations form a full-width stack immediately
     // above the four-button navigation dock.
-    const int card_width = landscape ? 992 : 640;
+    const int card_width = (full_width - (columns - 1) * gap) / columns;
     const int card_step = landscape ? 284 : 306;
     const int card_height = landscape ? 260 : 280;
     const int pinned_y = about ? (landscape ? 798 : 2398)
                                : (landscape ? 1010 : 2648);
-    lv_obj_set_pos(card, pinned ? 64 : column * (landscape ? 1016 : 672),
+    lv_obj_set_pos(card, pinned ? 64 : column * (card_width + gap),
                    pinned ? pinned_y : row * card_step);
-    lv_obj_set_size(card, pinned ? (landscape ? 3040 : 1312) : card_width,
+    lv_obj_set_size(card, pinned ? full_width : card_width,
                     pinned ? (landscape ? 190 : about ? 218 : 232)
                            : card_height);
     lv_obj_set_style_transform_scale(card, 256, LV_STATE_PRESSED);
@@ -3013,10 +3022,10 @@ void BuildMenu(Tools *state) {
     auto *title = Label(card, item.title, &lv_font_montserrat_36, kText);
     lv_obj_set_pos(title, pinned ? 152 : 164,
                    pinned ? (landscape ? 36 : about ? 42 : 40) : 42);
-    lv_obj_set_width(title, pinned ? (landscape ? 2750 : 1040)
+    lv_obj_set_width(title, pinned ? (full_width - (landscape ? 290 : 272))
                                   : card_width - 252);
     FitLabelToLines(title,
-                    pinned ? (landscape ? 2750 : 1040)
+                    pinned ? (full_width - (landscape ? 290 : 272))
                            : card_width - 252,
                     1, {&lv_font_montserrat_36, &lv_font_montserrat_32,
                         &lv_font_montserrat_28, &lv_font_montserrat_24,
@@ -3027,7 +3036,7 @@ void BuildMenu(Tools *state) {
                    pinned ? (landscape ? 112 : about ? 122 : 126)
                           : (landscape ? 150 : 164));
     FitLabelToLines(detail,
-                    pinned ? (landscape ? 2750 : 1040)
+                    pinned ? (full_width - (landscape ? 290 : 272))
                            : card_width - 100,
                     2, {&lv_font_montserrat_32, &lv_font_montserrat_28,
                         &lv_font_montserrat_24, &lv_font_montserrat_20,
@@ -3035,8 +3044,37 @@ void BuildMenu(Tools *state) {
     auto *arrow = Label(card, LV_SYMBOL_RIGHT, &lv_font_montserrat_36,
                         reboot ? kRed : kMutedStrong);
     lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -30, 0);
+    lv_obj_update_layout(detail);
+    lv_obj_set_height(card, std::max(static_cast<int>(lv_obj_get_height(card)),
+        static_cast<int>(lv_obj_get_y(detail) + lv_obj_get_height(detail) + 24)));
+    lv_obj_update_layout(card);
+    if (about) about_card = card;
+    else if (reboot) reboot_card = card;
+    else utility_cards.push_back(card);
     AnimateEnter(card, 30 + static_cast<uint32_t>(i) * 28, 12);
   }
+  // Text grows with the device profile and language. Keep complete utility
+  // descriptions visible, and anchor the measured destination stack above the dock.
+  const int columns = landscape ? 3 : 2;
+  int utility_y = 0;
+  for (size_t first = 0; first < utility_cards.size(); first += columns) {
+    int row_height = 0;
+    for (size_t index = first; index < std::min(first + columns, utility_cards.size()); ++index)
+      row_height = std::max(row_height, static_cast<int>(lv_obj_get_height(utility_cards[index])));
+    for (size_t index = first; index < std::min(first + columns, utility_cards.size()); ++index) {
+      lv_obj_set_y(utility_cards[index], utility_y);
+      lv_obj_set_height(utility_cards[index], row_height);
+    }
+    utility_y += row_height + (landscape ? 24 : 26);
+  }
+  const int destinations_bottom = lv_obj_get_height(state->screen) -
+      NavigationHeight(state->screen) - (landscape ? 80 : 62);
+  const int reboot_y = destinations_bottom - lv_obj_get_height(reboot_card);
+  const int about_y = reboot_y - (landscape ? 22 : 32) - lv_obj_get_height(about_card);
+  lv_obj_set_y(reboot_card, reboot_y);
+  lv_obj_set_y(about_card, about_y);
+  lv_obj_set_height(state->list, std::max(1, about_y - lv_obj_get_y(state->list) -
+      (landscape ? 20 : 46)));
 }
 }  // namespace
 

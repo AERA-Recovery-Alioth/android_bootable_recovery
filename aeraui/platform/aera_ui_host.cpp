@@ -43,8 +43,11 @@ constexpr auto kDisplayMetrics = aeraui::DisplayMetrics::FromThemeMetrics(
     true, AERA_SCREEN_H, AERA_STATUS_H, AERA_STATUS_INDENT_LEFT,
     AERA_STATUS_INDENT_RIGHT);
 #else
+#ifndef AERA_STATUS_H
+#define AERA_STATUS_H 165
+#endif
 constexpr aeraui::DisplayMetrics kDisplayMetrics{
-    false, 3168, 165, AERA_STATUS_INDENT_LEFT, AERA_STATUS_INDENT_RIGHT};
+    false, 3168, AERA_STATUS_H, AERA_STATUS_INDENT_LEFT, AERA_STATUS_INDENT_RIGHT};
 #endif
 
 }  // namespace

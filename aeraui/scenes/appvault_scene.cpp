@@ -45,6 +45,7 @@
 #include "backup/bootguard.hpp"
 #include "backup/incremental_apks.hpp"
 #include "ui_components.hpp"
+#include "appvault_layout.hpp"
 #include "src/misc/cache/instance/lv_image_cache.h"
 
 namespace aeraui {
@@ -108,6 +109,13 @@ struct State {
   void *context = nullptr;
   lv_obj_t *status = nullptr;
   lv_obj_t *detail = nullptr;
+  lv_obj_t *hero = nullptr;
+  lv_obj_t *location_title = nullptr;
+  lv_obj_t *location = nullptr;
+  lv_obj_t *protection = nullptr;
+  lv_obj_t *apps_panel = nullptr;
+  lv_obj_t *apps_title = nullptr;
+  lv_obj_t *actions = nullptr;
   lv_obj_t *selected = nullptr;
   lv_obj_t *system_filter_label = nullptr;
   lv_obj_t *select_all_label = nullptr;
@@ -1232,7 +1240,7 @@ void RenderApps(State *state) {
           selected_app.selected ? kOnAccent : kMuted, 0);
       UpdateSelected(state);
     });
-    y += 136;
+    y += appvault::layout::Row(row, name, package, 68, 128) + 8;
   }
   const bool any_visible = std::any_of(state->apps.begin(), state->apps.end(),
       [state](const App &app) { return state->show_system || !app.system; });
@@ -1372,6 +1380,7 @@ void ShowUserChooser(State *state) {
   lv_obj_set_size(list, sheet_width - 56, sheet_height - 178);
   lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scroll_dir(list, LV_DIR_VER);
+  int user_row_y = 0;
   for (size_t index = 0; index < state->users.size(); ++index) {
     const auto user = state->users[index];
     auto *row = Button(list, "", [state, user, overlay] {
@@ -1384,7 +1393,7 @@ void ShowUserChooser(State *state) {
       FitCompactButtonText(state->user_label);
       StartDiscovery(state);
     }, user.id == state->user_id);
-    lv_obj_set_pos(row, 0, static_cast<int>(index) * 142);
+    lv_obj_set_pos(row, 0, user_row_y);
     lv_obj_set_size(row, sheet_width - 80, 126);
     lv_obj_set_style_radius(row, 24, 0);
     auto *name = Label(row, user.name.c_str(), &lv_font_montserrat_32, kText);
@@ -1400,6 +1409,7 @@ void ShowUserChooser(State *state) {
           Label(row, LV_SYMBOL_OK, &lv_font_montserrat_32, kOnAccent);
       lv_obj_align(mark, LV_ALIGN_RIGHT_MID, -32, 0);
     }
+    user_row_y += appvault::layout::Row(row, name, status, 72, 126) + 16;
   }
   AnimateEnter(sheet, 0, 28);
 }
@@ -1458,8 +1468,9 @@ void ShowSnapshotApps(State *state, size_t snapshot_index) {
 
   auto *list = lv_obj_create(sheet);
   Clear(list);
-  lv_obj_set_pos(list, 28, 205);
-  lv_obj_set_size(list, sheet_width - 56, sheet_height - 390);
+  const int list_top = appvault::layout::RestoreHeader(title, subtitle, selected);
+  lv_obj_set_pos(list, 28, list_top);
+  lv_obj_set_size(list, sheet_width - 56, sheet_height - list_top - 185);
   lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scroll_dir(list, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_ACTIVE);
@@ -1534,7 +1545,7 @@ void ShowSnapshotApps(State *state, size_t snapshot_index) {
       lv_obj_set_style_text_color(mark, app.selected ? kOnAccent : kMuted, 0);
       UpdateSnapshotCount(state->snapshot_items[snapshot_index], selected);
     });
-    y += 136;
+    y += appvault::layout::Row(row, name, package, 68, 128) + 8;
   }
   if (snapshot.apps.empty()) {
     auto *empty = Label(list, "This backup does not contain recognizable app data.",
@@ -1581,14 +1592,16 @@ void ShowSnapshotChooser(State *state) {
   auto *hint = Label(sheet, "Choose a backup to see exactly which apps it contains.",
                      &lv_font_montserrat_24, kMuted);
   lv_obj_set_pos(hint, 42, 98);
+  lv_obj_set_width(hint, sheet_width - 84);
+  const int list_top = appvault::layout::PlaceBelow(hint, title, 98, 12) + 24;
   auto *close = Button(sheet, LV_SYMBOL_CLOSE,
                        [overlay] { lv_obj_delete_async(overlay); });
   lv_obj_align(close, LV_ALIGN_TOP_RIGHT, -36, 30);
   lv_obj_set_size(close, 112, 92);
   auto *list = lv_obj_create(sheet);
   Clear(list);
-  lv_obj_set_pos(list, 28, 170);
-  lv_obj_set_size(list, sheet_width - 56, sheet_height - 210);
+  lv_obj_set_pos(list, 28, list_top);
+  lv_obj_set_size(list, sheet_width - 56, sheet_height - list_top - 40);
   lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scroll_dir(list, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_ACTIVE);
@@ -1612,7 +1625,7 @@ void ShowSnapshotChooser(State *state) {
     lv_obj_set_pos(details, 32, 86);
     auto *arrow = Label(card, LV_SYMBOL_RIGHT, &lv_font_montserrat_32, kAccent);
     lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -34, 0);
-    y += 190;
+    y += appvault::layout::Row(card, date, details, 86, 174) + 16;
   }
   if (state->snapshot_items.empty()) {
     auto *empty = Label(list, "No app backups found.",
@@ -1620,6 +1633,45 @@ void ShowSnapshotChooser(State *state) {
     lv_obj_align(empty, LV_ALIGN_TOP_MID, 0, 140);
   }
   AnimateEnter(sheet, 0, 28);
+}
+
+void ReflowMainLayout(State *state) {
+  if (!state || !state->hero || !state->actions || !state->apps_panel) return;
+  const bool landscape = Landscape(state->screen);
+  lv_obj_update_layout(state->actions);
+  const int actions_y = lv_obj_get_height(state->screen) - lv_obj_get_height(state->actions) - 34;
+  lv_obj_set_y(state->actions, actions_y);
+  const int natural_hero_height = std::max(landscape ? 780 : 600,
+      appvault::layout::Hero(state->status, state->detail, state->location_title,
+          state->location, state->protection, state->progress));
+  lv_obj_set_height(state->hero, landscape ? std::min(natural_hero_height,
+      actions_y - lv_obj_get_y(state->hero) - 24) : natural_hero_height);
+  if (landscape) {
+    lv_obj_add_flag(state->hero, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(state->hero, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(state->hero, LV_SCROLLBAR_MODE_AUTO);
+  }
+  const int apps_y = landscape ? 320 : lv_obj_get_y(state->hero) + natural_hero_height + 30;
+  lv_obj_set_y(state->apps_panel, apps_y);
+  lv_obj_set_height(state->apps_panel, std::max(1, actions_y - apps_y - 24));
+  int filter_bottom = 0;
+  for (auto *label : {state->select_all_label, state->system_filter_label, state->user_label}) {
+    if (!label) continue;
+    lv_obj_update_layout(label);
+    auto *button = lv_obj_get_parent(label);
+    lv_obj_set_height(button, std::max(82, static_cast<int>(lv_obj_get_height(label)) + 24));
+    lv_obj_center(label);
+    if (label != state->user_label)
+      filter_bottom = std::max(filter_bottom, static_cast<int>(lv_obj_get_y(button) + lv_obj_get_height(button)));
+  }
+  int list_top = appvault::layout::AppsHeader(state->apps_title, state->selected,
+                                             state->user_button);
+  if (lv_obj_get_y(state->user_button) < filter_bottom + 16) {
+    lv_obj_set_y(state->user_button, filter_bottom + 16);
+    list_top = filter_bottom + 16 + lv_obj_get_height(state->user_button) + 14;
+  }
+  lv_obj_set_y(state->list, list_top);
+  lv_obj_set_height(state->list, std::max(1, actions_y - apps_y - 24 - list_top - 40));
 }
 
 void Poll(State *state) {
@@ -1707,6 +1759,7 @@ void Poll(State *state) {
     }
     state->browse_after_refresh = false;
   }
+  ReflowMainLayout(state);
 }
 
 void Destroy(State *state) {
@@ -1837,6 +1890,7 @@ void BuildAppVaultScene(lv_obj_t *screen, ActionCallback callback,
   const int apps_y = landscape ? 320 : 1080;
   const int apps_height = actions_y - apps_y - 24;
   auto *hero = lv_obj_create(screen);
+  state->hero = hero;
   Panel(hero, 46, kMainSheet);
   lv_obj_set_pos(hero, 64, landscape ? 320 : 450);
   lv_obj_set_size(hero, landscape ? 900 : 1312, landscape ? 780 : 600);
@@ -1846,7 +1900,7 @@ void BuildAppVaultScene(lv_obj_t *screen, ActionCallback callback,
                         &lv_font_montserrat_48, kText);
   lv_obj_set_pos(state->status, 184, 44);
   lv_obj_set_width(state->status, landscape ? 650 : 1040);
-  lv_label_set_long_mode(state->status, LV_LABEL_LONG_DOT);
+  lv_label_set_long_mode(state->status, LV_LABEL_LONG_WRAP);
   state->detail = Label(hero, "Loading installed apps.",
                         &lv_font_montserrat_24, kMuted);
   lv_obj_set_pos(state->detail, 184, 104);
@@ -1855,14 +1909,18 @@ void BuildAppVaultScene(lv_obj_t *screen, ActionCallback callback,
 
   auto *location_title =
       Label(hero, "Backup location", &lv_font_montserrat_24, kMuted);
+  state->location_title = location_title;
   lv_obj_set_pos(location_title, 40, 218);
   auto *location =
       Label(hero, kDefaultRepository, &lv_font_montserrat_32, kText);
+  state->location = location;
   lv_obj_set_pos(location, 40, 266);
   lv_obj_set_width(location, landscape ? 820 : 1210);
   lv_label_set_long_mode(location, LV_LABEL_LONG_DOT);
   auto *protection =
       Label(hero, "Encrypted recovery snapshots", &lv_font_montserrat_24, kGreen);
+  state->protection = protection;
+  lv_obj_set_width(protection, landscape ? 820 : 1210);
   lv_obj_set_pos(protection, 40, 334);
 
   state->progress = lv_bar_create(hero);
@@ -1874,16 +1932,21 @@ void BuildAppVaultScene(lv_obj_t *screen, ActionCallback callback,
   lv_obj_add_flag(state->progress, LV_OBJ_FLAG_HIDDEN);
 
   auto *apps_panel = lv_obj_create(screen);
+  state->apps_panel = apps_panel;
   Panel(apps_panel, 46, kMainSheet);
   lv_obj_set_pos(apps_panel, landscape ? 994 : 64, apps_y);
   lv_obj_set_size(apps_panel, landscape ? 2110 : 1312,
                   apps_height);
   auto *apps_title = Label(apps_panel, "Apps", &lv_font_montserrat_48, kText);
+  state->apps_title = apps_title;
   lv_obj_set_pos(apps_title, 34, 24);
   state->selected = Label(apps_panel, "Discovering apps…",
                           &lv_font_montserrat_24, kMuted);
   lv_obj_set_pos(state->selected, 36, 82);
   const int filter_width = landscape ? 410 : 330;
+  lv_obj_set_width(apps_title, (landscape ? 2110 : 1312) - 2 * filter_width - 104);
+  lv_label_set_long_mode(apps_title, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(state->selected, (landscape ? 2110 : 1312) - 2 * filter_width - 104);
   auto *select_all = Button(apps_panel, "", [state] {
     const bool all_selected = std::all_of(state->apps.begin(), state->apps.end(),
         [state](const App &app) {
@@ -1929,6 +1992,7 @@ void BuildAppVaultScene(lv_obj_t *screen, ActionCallback callback,
   lv_obj_set_style_bg_color(state->list, kAccent, LV_PART_SCROLLBAR);
 
   auto *actions = lv_obj_create(screen);
+  state->actions = actions;
   Clear(actions);
   lv_obj_set_pos(actions, 64, actions_y);
   lv_obj_set_size(actions, landscape ? 3040 : 1312, actions_height);
@@ -1948,6 +2012,11 @@ void BuildAppVaultScene(lv_obj_t *screen, ActionCallback callback,
                      &lv_font_montserrat_24, &lv_font_montserrat_20,
                      &lv_font_montserrat_18, &lv_font_montserrat_16});
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_update_layout(label);
+    lv_obj_set_height(*target, std::max(116, static_cast<int>(lv_obj_get_height(label) + 24)));
+    lv_obj_update_layout(*target);
+    lv_obj_set_height(actions, std::max(static_cast<int>(lv_obj_get_height(actions)),
+                                       static_cast<int>(lv_obj_get_height(*target))));
     lv_obj_center(label);
   };
   add(&state->backup, "Back up selected", 0,
@@ -1972,6 +2041,10 @@ void BuildAppVaultScene(lv_obj_t *screen, ActionCallback callback,
       state->apps = DiscoverApps(state->preparation.cancel, state->user_id);
     state->metadata_done.store(true, std::memory_order_release);
   });
+  lv_obj_update_layout(actions);
+  for (auto *button : {state->backup, state->refresh_button, state->restore})
+    lv_obj_set_height(button, lv_obj_get_height(actions));
+  ReflowMainLayout(state);
   state->timer = lv_timer_create([](lv_timer_t *timer) {
     Poll(static_cast<State *>(lv_timer_get_user_data(timer)));
   }, 100, state);

@@ -1903,14 +1903,22 @@ bool RecoverySetUiFont(const std::string &plugin_id) {
     return false;
   return DataManager::SetValue("aera_ui_font", plugin_id, 1) == 0;
 }
+int DefaultInterfaceSize() {
+  return std::clamp(property_get_int32("ro.aera.ui.interface_size", 1), 0, 3);
+}
+
+int LayoutProfileVersion() {
+  return std::max(0, property_get_int32("ro.aera.ui.profile_version", 0));
+}
+
 InterfaceSize RecoveryInterfaceSize() {
   LoadAeraPreferencesIfAvailable();
   const int value = std::clamp(
       DataManager::GetIntValue("aera_interface_size"), 0, 3);
-  // DataManager returns zero for an unset integer. Preserve today's UI as the
-  // default by storing human-readable names and treating empty as Normal.
+  // DataManager returns zero for an unset integer. Use the device default
+  // unless a saved interface-size value exists.
   const std::string stored = DataManager::GetStrValue("aera_interface_size");
-  return stored.empty() ? InterfaceSize::kNormal
+  return stored.empty() ? static_cast<InterfaceSize>(DefaultInterfaceSize())
                         : static_cast<InterfaceSize>(value);
 }
 bool RecoverySetInterfaceSize(InterfaceSize size) {
@@ -2118,6 +2126,7 @@ struct EarlyUiPreferences {
   int tinted_icon_backgrounds;
   int themed_home_icons;
   int interface_size;
+  int layout_profile;
   std::string language;
   std::string keyboard_layout;
   int home_grid_columns;
@@ -2191,7 +2200,8 @@ EarlyUiPreferences DefaultEarlyUiPreferences() {
   preferences.surface_style = 0;
   preferences.tinted_icon_backgrounds = 0;
   preferences.themed_home_icons = 0;
-  preferences.interface_size = 1;
+  preferences.interface_size = DefaultInterfaceSize();
+  preferences.layout_profile = 0;
   preferences.language = AERA_DEFAULT_LANGUAGE;
   preferences.keyboard_layout = "qwerty";
   preferences.home_grid_columns = 3;
@@ -2250,7 +2260,8 @@ EarlyUiPreferences CaptureCurrentEarlyUiPreferences() {
       DataManager::GetIntValue("aera_themed_home_icons") != 0 ? 1 : 0;
   const std::string interface_size = DataManager::GetStrValue("aera_interface_size");
   preferences.interface_size =
-      interface_size.empty() ? 1 : std::clamp(atoi(interface_size.c_str()), 0, 3);
+      interface_size.empty() ? DefaultInterfaceSize() : std::clamp(atoi(interface_size.c_str()), 0, 3);
+  preferences.layout_profile = LayoutProfileVersion();
   preferences.language = DataManager::GetStrValue("tw_language");
   if (!ValidLanguage(preferences.language)) preferences.language = AERA_DEFAULT_LANGUAGE;
   preferences.keyboard_layout =
@@ -2384,6 +2395,9 @@ bool SetEarlyUiValue(EarlyUiPreferences* preferences, const std::string& key,
   } else if (key == "themed_home_icons") {
     if (!ParseInteger(value, 0, 1, &parsed)) return false;
     preferences->themed_home_icons = parsed;
+  } else if (key == "layout_profile") {
+    if (!ParseInteger(value, 0, 1000, &parsed)) return false;
+    preferences->layout_profile = parsed;
   } else if (key == "interface_size") {
     if (!ParseInteger(value, 0, 3, &parsed)) return false;
     preferences->interface_size = parsed;
@@ -2473,7 +2487,10 @@ void ApplyEarlyUiPreferences(const EarlyUiPreferences& preferences) {
   DataManager::SetValue("aera_tinted_icon_backgrounds",
                         preferences.tinted_icon_backgrounds);
   DataManager::SetValue("aera_themed_home_icons", preferences.themed_home_icons);
-  DataManager::SetValue("aera_interface_size", preferences.interface_size);
+  // Upgrade an older saved layout once; subsequent user size choices persist.
+  DataManager::SetValue("aera_interface_size",
+      preferences.layout_profile < LayoutProfileVersion()
+          ? DefaultInterfaceSize() : preferences.interface_size);
   DataManager::SetValue("tw_language", preferences.language);
   DataManager::SetValue("aera_keyboard_layout", preferences.keyboard_layout);
   DataManager::SetValue("aera_home_grid_columns", preferences.home_grid_columns);
@@ -2554,6 +2571,7 @@ std::string SerializeEarlyUiPreferences(const EarlyUiPreferences& preferences) {
          << preferences.tinted_icon_backgrounds << '\n'
          << "themed_home_icons=" << preferences.themed_home_icons << '\n'
          << "interface_size=" << preferences.interface_size << '\n'
+         << "layout_profile=" << preferences.layout_profile << '\n'
          << "language=" << preferences.language << '\n'
          << "keyboard_layout=" << preferences.keyboard_layout << '\n'
          << "home_grid_columns=" << preferences.home_grid_columns << '\n'
@@ -2729,6 +2747,7 @@ bool SaveAeraPreferences(bool require_early) {
          << (RecoveryTintedIconBackgrounds() ? 1 : 0) << '\n'
          << "themed_home_icons=" << (RecoveryThemedHomeIcons() ? 1 : 0) << '\n'
          << "interface_size=" << static_cast<int>(RecoveryInterfaceSize()) << '\n'
+         << "layout_profile=" << LayoutProfileVersion() << '\n'
          << "keyboard_layout="
          << (RecoveryKeyboardLayout() == KeyboardLayout::kQwertz
                  ? "qwertz" : "qwerty") << '\n'

@@ -50,6 +50,7 @@ struct WebScene {
   std::thread worker;
   bool started = false, finished = false, auto_launch = true;
   bool persistent = false;
+  bool external_channel = false;
   bool manager_open = false;
   bool settings_open = false;
   bool frame_waiting_for_refresh = false;
@@ -741,7 +742,12 @@ void BuildWebScene(lv_obj_t *screen, ActionCallback callback, void *context,
   ResetBrowserTouches(s);
   lv_display_add_event_cb(
       s->display, BrowserRefreshReady, LV_EVENT_REFR_READY, s);
-  if (frame_fd >= 0 || control_fd >= 0) s->session.Adopt(frame_fd, control_fd);
+  if (frame_fd >= 0 || control_fd >= 0) {
+    s->external_channel = true;
+    s->session.Adopt(frame_fd, control_fd);
+  } else if (!s->session.Connected()) {
+    s->external_channel = false;
+  }
   lv_obj_add_event_cb(screen, [](lv_event_t *e) {
     auto *s = static_cast<WebScene *>(lv_event_get_user_data(e));
     DetachWebScene(s);
@@ -939,7 +945,9 @@ void BuildWebScene(lv_obj_t *screen, ActionCallback callback, void *context,
   if (!s->timer) s->timer = lv_timer_create([](lv_timer_t *timer) {
     auto *s = static_cast<WebScene *>(lv_timer_get_user_data(timer));
     const bool visible = s->screen != nullptr;
-    if (!s->process.Running() && s->session.Connected())
+    // Externally adopted channels have no BrowserProcess owned by this scene.
+    // Their socket lifecycle is checked by Session::Poll instead.
+    if (!s->external_channel && !s->process.Running() && s->session.Connected())
       s->session.Close();
     lv_timer_set_period(timer, s->session.Connected() ? 16 : 50);
     if (s->session.Connected()) {

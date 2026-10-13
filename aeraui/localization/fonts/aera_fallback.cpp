@@ -68,6 +68,7 @@ struct DisplaySize {
 };
 std::map<uint32_t, DisplaySize> display_fonts;
 std::map<std::pair<std::string, uint32_t>, lv_font_t *> external_fonts;
+std::map<std::pair<const lv_font_t *, uint32_t>, lv_font_t> scaled_fonts;
 bool initialized = false;
 std::string language = "en";
 std::string selected_font_id;
@@ -180,6 +181,23 @@ void InitializeFallbackFonts() {
   for (size_t i = 0; i < kSizes.size(); ++i) RefreshSize(i);
 }
 
+void ShutdownFallbackFonts() {
+  // Call after deleting all UI objects and before LVGL tears down FreeType.
+  scaled_fonts.clear();
+  display_fonts.clear();
+  for (auto &set : fonts) {
+    for (auto *font : set.fallback)
+      if (font != nullptr) lv_freetype_font_delete(font);
+    set = {};
+  }
+  for (const auto &entry : external_fonts)
+    lv_freetype_font_delete(entry.second);
+  external_fonts.clear();
+  selected_font_id.clear();
+  selected_font_path.clear();
+  initialized = false;
+}
+
 void SetFallbackLanguage(const std::string &requested) {
   language = requested;
   InitializeFallbackFonts();
@@ -228,6 +246,22 @@ const lv_font_t *WithLanguageFallback(const lv_font_t *font) {
   return font;
 }
 
+const lv_font_t *ScaledUiFont(const lv_font_t *font, int percent) {
+  if (font == nullptr || percent == 100) return WithLanguageFallback(font);
+  percent = std::clamp(percent, 100, 200);
+  for (size_t i = 0; i < kBaseFonts.size(); ++i) {
+    if (font != kBaseFonts[i]) continue;
+    const uint32_t size = kSizes[i] * percent / 100;
+    auto &wrapper = scaled_fonts[{font, size}];
+    wrapper = *DisplayFont(size);
+    // Retain recovery symbols and language coverage when the larger primary
+    // typeface does not contain a glyph.
+    wrapper.fallback = WithLanguageFallback(font);
+    return &wrapper;
+  }
+  return WithLanguageFallback(font);
+}
+
 const lv_font_t *DisplayFont(uint32_t size) {
   InitializeFallbackFonts();
   auto [iterator, inserted] = display_fonts.try_emplace(size);
@@ -242,8 +276,14 @@ const lv_font_t *DisplayFont(uint32_t size) {
       display.loaded = true;
     }
   }
-  return display.loaded ? &display.wrapper
-                        : WithLanguageFallback(&lv_font_montserrat_48);
+  if (display.loaded) return &display.wrapper;
+  // Missing optional font assets must not turn a small intrinsic control
+  // into a fixed 48-pixel label. Pick the closest available bitmap size.
+  size_t fallback = 0;
+  for (size_t index = 0; index < kSizes.size(); ++index) {
+    if (static_cast<uint32_t>(kSizes[index]) <= size && kSizes[index] >= kSizes[fallback]) fallback = index;
+  }
+  return WithLanguageFallback(kBaseFonts[fallback]);
 }
 
 }  // namespace aeraui::fonts

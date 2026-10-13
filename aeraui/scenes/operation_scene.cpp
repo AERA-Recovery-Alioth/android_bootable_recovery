@@ -510,13 +510,71 @@ void ReflowOperationHeader(const OperationScene &scene) {
       static_cast<int>(lv_obj_get_y(scene.detail) + lv_obj_get_height(scene.detail)) + 16 - 222);
   lv_obj_set_y(scene.percent, 222 + extra);
   lv_obj_align(scene.elapsed, LV_ALIGN_TOP_RIGHT, -48, 246 + extra);
-  lv_obj_set_y(scene.progress, 310 + extra);
-  if (scene.progress_pulse) lv_obj_set_y(scene.progress_pulse, 314 + extra);
-  lv_obj_set_y(scene.metrics_panel, 390 + extra);
-  if (scene.transfer_speed) lv_obj_set_y(scene.transfer_speed, 600 + extra);
-  lv_obj_set_y(scene.destination, 650 + extra);
-  lv_obj_set_height(card, (landscape ? 850 : 756) + extra);
-  if (!landscape) lv_obj_set_y(scene.activity_panel, 1230 + extra);
+  lv_obj_update_layout(card);
+  const int progress_y = std::max(310 + extra, static_cast<int>(std::max(
+      lv_obj_get_y(scene.percent) + lv_obj_get_height(scene.percent),
+      lv_obj_get_y(scene.elapsed) + lv_obj_get_height(scene.elapsed))) + 24);
+  const int content_shift = progress_y - 310;
+  lv_obj_set_y(scene.progress, progress_y);
+  if (scene.progress_pulse) lv_obj_set_y(scene.progress_pulse, progress_y + 4);
+  lv_obj_set_y(scene.metrics_panel, 390 + content_shift);
+  auto *stats_title = lv_obj_get_child(scene.metrics_panel, 0);
+  lv_obj_update_layout(stats_title);
+  lv_obj_set_y(scene.metrics, std::max(78, static_cast<int>(
+      lv_obj_get_y(stats_title) + lv_obj_get_height(stats_title) + 16)));
+  lv_obj_align(scene.files, LV_ALIGN_TOP_RIGHT, -30, lv_obj_get_y(scene.metrics));
+  lv_obj_update_layout(scene.metrics_panel);
+  const int metrics_bottom = std::max(
+      lv_obj_get_y(scene.metrics) + lv_obj_get_height(scene.metrics),
+      lv_obj_get_y(scene.files) + lv_obj_get_height(scene.files));
+  lv_obj_set_height(scene.metrics_panel, std::max(180, metrics_bottom + 24));
+  lv_obj_update_layout(scene.metrics_panel);
+  int next_y = lv_obj_get_y(scene.metrics_panel) + lv_obj_get_height(scene.metrics_panel) + 30;
+  if (scene.transfer_speed) {
+    lv_obj_set_y(scene.transfer_speed, next_y);
+    lv_obj_update_layout(scene.transfer_speed);
+    next_y += lv_obj_get_height(scene.transfer_speed) + 12;
+  }
+  lv_obj_set_y(scene.destination, next_y);
+  lv_obj_update_layout(scene.destination);
+  const int natural_height = std::max((landscape ? 850 : 756) + content_shift,
+      static_cast<int>(next_y + lv_obj_get_height(scene.destination) + 32));
+  int card_height = natural_height;
+  if (landscape) {
+    const int footer_y = lv_obj_get_height(lv_obj_get_parent(card)) - 70 - 116;
+    card_height = std::min(natural_height, footer_y - lv_obj_get_y(card) - 24);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(card, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_AUTO);
+  }
+  lv_obj_set_height(card, card_height);
+  lv_obj_update_layout(card);
+  const int activity_y = landscape ? 340 : lv_obj_get_y(card) -
+      lv_obj_get_style_translate_y(card, LV_PART_MAIN) + lv_obj_get_height(card) + 54;
+  if (!landscape) lv_obj_set_y(scene.activity_panel, activity_y);
+  if (scene.notice && !scene.payload_parallel && scene.job != Job::kInstall &&
+      scene.job != Job::kSideload && !scene.pc_app_backup) {
+    lv_obj_update_layout(scene.activity_title);
+    lv_obj_set_y(scene.activity_summary, std::max(112, static_cast<int>(
+        lv_obj_get_y(scene.activity_title) + lv_obj_get_height(scene.activity_title) + 16)));
+    lv_obj_update_layout(scene.activity_summary);
+    lv_obj_set_y(scene.notice, std::max(280, static_cast<int>(
+        lv_obj_get_y(scene.activity_summary) + lv_obj_get_height(scene.activity_summary) + 24)));
+    lv_obj_update_layout(scene.notice);
+    lv_obj_set_y(scene.details, std::max(landscape ? 650 : 400, static_cast<int>(
+        lv_obj_get_y(scene.notice) + lv_obj_get_height(scene.notice) + 24)));
+    lv_obj_update_layout(scene.details);
+    const int activity_height = std::max(landscape ? 850 : 600, static_cast<int>(
+        lv_obj_get_y(scene.details) + lv_obj_get_height(scene.details) + 32));
+    lv_obj_set_height(scene.activity_panel, landscape ? std::min(activity_height,
+        lv_obj_get_height(lv_obj_get_parent(card)) - 70 - 116 -
+        lv_obj_get_y(scene.activity_panel) - 24) : activity_height);
+    if (landscape) {
+      lv_obj_add_flag(scene.activity_panel, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_set_scroll_dir(scene.activity_panel, LV_DIR_VER);
+      lv_obj_set_scrollbar_mode(scene.activity_panel, LV_SCROLLBAR_MODE_AUTO);
+    }
+  }
   if (scene.payload_parallel && scene.payload_list && scene.details) {
     auto *screen = lv_obj_get_parent(card);
     lv_obj_update_layout(screen);
@@ -527,7 +585,7 @@ void ReflowOperationHeader(const OperationScene &scene) {
         ? static_cast<int>(lv_obj_get_y(scene.done)) - 36
         : static_cast<int>(lv_obj_get_height(screen)) - (landscape ? 70 : 130);
     // Use the resting position, not the entrance animation's temporary offset.
-    const int height = std::max(1, bottom - (landscape ? 340 : 1230 + extra));
+    const int height = std::max(1, bottom - activity_y);
     lv_obj_set_height(scene.activity_panel, height);
     lv_obj_set_y(scene.details, height - 200);
     lv_obj_set_height(scene.payload_list, std::max(1,
@@ -551,7 +609,7 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
   result.format_data = request.job == Job::kFormatData;
   const bool installer =
       request.job == Job::kInstall || request.job == Job::kSideload;
-  result.indeterminate_progress = request.job == Job::kSideload;
+  result.indeterminate_progress = request.job == Job::kSideload || request.job == Job::kInstall;
   result.started = lv_tick_get();
   const bool landscape = Landscape(screen);
 
@@ -600,15 +658,11 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
       ? "Preparing to restore" : InitialTitle(request.job), &lv_font_montserrat_48, kText);
   lv_obj_set_pos(result.status, installer ? 176 : 208, 42);
   lv_obj_set_width(result.status, installer ? 1042 : 1010);
-  lv_label_set_long_mode(result.status, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_max_height(result.status,
-      2 * lv_font_get_line_height(lv_obj_get_style_text_font(result.status, LV_PART_MAIN)), 0);
+  lv_label_set_long_mode(result.status, LV_LABEL_LONG_WRAP);
   result.detail = Label(card, "Waiting for the recovery backend to begin.", &lv_font_montserrat_24, kMuted);
   lv_obj_set_pos(result.detail, installer ? 176 : 208, 112);
   lv_obj_set_width(result.detail, installer ? 1042 : 1010);
-  lv_label_set_long_mode(result.detail, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_max_height(result.detail,
-      2 * lv_font_get_line_height(lv_obj_get_style_text_font(result.detail, LV_PART_MAIN)), 0);
+  lv_label_set_long_mode(result.detail, LV_LABEL_LONG_WRAP);
 
   result.percent = Label(card, "0%", &lv_font_montserrat_48, kAccent);
   lv_obj_set_pos(result.percent, 48, 222);
@@ -658,7 +712,7 @@ OperationScene BuildJobScene(lv_obj_t *screen, const JobRequest &request,
   result.metrics = Label(stats, "Waiting for progress information", &lv_font_montserrat_32, kText);
   lv_obj_set_pos(result.metrics, 30, 78);
   lv_obj_set_width(result.metrics, 740);
-  lv_label_set_long_mode(result.metrics, LV_LABEL_LONG_DOT);
+  lv_label_set_long_mode(result.metrics, LV_LABEL_LONG_WRAP);
   result.files = Label(stats, "", &lv_font_montserrat_24, kMutedStrong);
   lv_obj_align(result.files, LV_ALIGN_RIGHT_MID, -30, 28);
   lv_obj_set_width(result.files, 380);
@@ -1105,7 +1159,6 @@ void RefreshOperationScene(const OperationScene &scene) {
     friendly.title = "Cancelling...";
   i18n::BindLabel(scene.status, friendly.title.c_str());
   i18n::BindLabel(scene.detail, friendly.explanation.c_str());
-  ReflowOperationHeader(scene);
   i18n::BindLabel(scene.metrics,
       friendly.amount.empty() ? "Working..." : friendly.amount.c_str());
   i18n::BindLabel(scene.files, friendly.files.c_str());
@@ -1117,6 +1170,7 @@ void RefreshOperationScene(const OperationScene &scene) {
   if (scene.activity_summary &&
       !lv_obj_has_flag(scene.activity_summary, LV_OBJ_FLAG_HIDDEN))
     i18n::BindLabel(scene.activity_summary, friendly.activity.c_str());
+  ReflowOperationHeader(scene);
 
   if (scene.installer_prompt) {
     const auto prompt = RecoveryInstallerPrompt();

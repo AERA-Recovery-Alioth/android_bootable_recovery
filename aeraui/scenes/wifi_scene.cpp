@@ -70,6 +70,10 @@ struct WifiUi {
   lv_obj_t *pair_code = nullptr;
   lv_obj_t *pair_button = nullptr;
   lv_obj_t *adb_card = nullptr;
+  lv_obj_t *adb_line = nullptr;
+  lv_obj_t *adb_address_title = nullptr;
+  lv_obj_t *adb_command_card = nullptr;
+  lv_obj_t *adb_steps = nullptr;
   lv_obj_t *paired_caption = nullptr;
   lv_obj_t *paired_list = nullptr;
   lv_obj_t *fastboot_caption = nullptr;
@@ -262,10 +266,40 @@ void RefreshWifiSettings(WifiUi *state) {
     lv_obj_add_flag(state->pair_panel, LV_OBJ_FLAG_HIDDEN);
   }
 
-  const int paired_top = adb.pairing ? 950 : 760;
+  lv_obj_update_layout(state->adb_status);
+  lv_obj_set_y(state->adb_detail, std::max(88, static_cast<int>(
+      lv_obj_get_y(state->adb_status) + lv_obj_get_height(state->adb_status) + 12)));
+  lv_obj_update_layout(state->adb_detail);
+  const int header_bottom = std::max(172, static_cast<int>(
+      lv_obj_get_y(state->adb_detail) + lv_obj_get_height(state->adb_detail) + 24));
+  lv_obj_set_height(state->adb_toggle, header_bottom);
+  lv_obj_set_y(state->adb_line, header_bottom);
+  lv_obj_set_y(state->adb_address_title, header_bottom + 40);
+  lv_obj_update_layout(state->adb_address_title);
+  lv_obj_set_y(state->adb_endpoint, lv_obj_get_y(state->adb_address_title) +
+      lv_obj_get_height(state->adb_address_title) + 12);
+  lv_obj_update_layout(state->adb_endpoint);
+  lv_obj_set_y(state->adb_command_card, lv_obj_get_y(state->adb_endpoint) +
+      lv_obj_get_height(state->adb_endpoint) + 26);
+  lv_obj_update_layout(state->adb_command);
+  lv_obj_set_height(state->adb_command_card, std::max(128, static_cast<int>(
+      lv_obj_get_y(state->adb_command) + lv_obj_get_height(state->adb_command) + 34)));
+  lv_obj_update_layout(state->adb_command_card);
+  lv_obj_set_y(state->adb_steps, lv_obj_get_y(state->adb_command_card) +
+      lv_obj_get_height(state->adb_command_card) + 32);
+  lv_obj_update_layout(state->adb_steps);
+  lv_obj_set_y(state->pair_button, lv_obj_get_y(state->adb_steps) +
+      lv_obj_get_height(state->adb_steps) + 24);
+  lv_obj_set_y(state->pair_panel, lv_obj_get_y(state->pair_button) +
+      lv_obj_get_height(state->pair_button) + 24);
+  const int paired_top = adb.pairing
+      ? lv_obj_get_y(state->pair_panel) + lv_obj_get_height(state->pair_panel) + 32
+      : lv_obj_get_y(state->pair_button) + lv_obj_get_height(state->pair_button) + 32;
   lv_obj_set_y(state->paired_caption, paired_top);
-  lv_obj_set_y(state->paired_list, paired_top + 44);
-  const int adb_card_height = paired_top + 348;
+  lv_obj_update_layout(state->paired_caption);
+  lv_obj_set_y(state->paired_list, paired_top + lv_obj_get_height(state->paired_caption) + 12);
+  const int adb_card_height = lv_obj_get_y(state->paired_list) +
+      lv_obj_get_height(state->paired_list) + 44;
   lv_obj_set_height(state->adb_card, adb_card_height);
 
   const FastbootWifiStatus fastboot = RecoveryFastbootWifiStatus();
@@ -276,7 +310,7 @@ void RefreshWifiSettings(WifiUi *state) {
   else
     lv_obj_remove_state(state->fastboot_switch, LV_STATE_CHECKED);
 
-  const int fastboot_caption_top = 538 + adb_card_height + 52;
+  const int fastboot_caption_top = lv_obj_get_y(state->adb_card) + adb_card_height + 52;
   const int fastboot_card_top = fastboot_caption_top + 52;
   lv_obj_set_y(state->fastboot_caption, fastboot_caption_top);
   lv_obj_set_y(state->fastboot_card, fastboot_card_top);
@@ -313,7 +347,17 @@ void RefreshWifiSettings(WifiUi *state) {
     lv_obj_add_flag(state->fastboot_guide, LV_OBJ_FLAG_HIDDEN);
   }
 
-  const int fastboot_card_height = fastboot_enabled ? 684 : 234;
+  lv_obj_update_layout(state->fastboot_status);
+  lv_obj_set_y(state->fastboot_detail, std::max(92, static_cast<int>(
+      lv_obj_get_y(state->fastboot_status) + lv_obj_get_height(state->fastboot_status) + 12)));
+  lv_obj_update_layout(state->fastboot_detail);
+  const int fastboot_row_height = std::max(170, static_cast<int>(
+      lv_obj_get_y(state->fastboot_detail) + lv_obj_get_height(state->fastboot_detail) + 24));
+  lv_obj_set_height(state->fastboot_toggle, fastboot_row_height);
+  lv_obj_set_y(state->fastboot_guide, 32 + fastboot_row_height + 20);
+  const int fastboot_card_height = fastboot_enabled
+      ? lv_obj_get_y(state->fastboot_guide) + lv_obj_get_height(state->fastboot_guide) + 32
+      : 32 + fastboot_row_height + 32;
   lv_obj_set_height(state->fastboot_card, fastboot_card_height);
   lv_obj_set_y(state->security_note,
                fastboot_card_top + fastboot_card_height + 28);
@@ -365,7 +409,7 @@ void ShowWifiSettings(WifiUi *state) {
   const bool landscape = Landscape(page);
   auto *back = Button(page, LV_SYMBOL_LEFT "  Networks",
                       [page] { CloseOverlay(page); });
-  lv_obj_set_size(back, 330, 104);
+  lv_obj_set_size(back, kDeviceFontScale > 100 ? 470 : 330, 104);
   lv_obj_align(back, LV_ALIGN_TOP_RIGHT, -64, landscape ? 184 : 232);
   lv_obj_set_style_radius(back, 32, 0);
 
@@ -386,18 +430,23 @@ void ShowWifiSettings(WifiUi *state) {
   state->settings_message = message;
   lv_obj_set_pos(message, 16, 416);
   lv_obj_set_width(message, width - 32);
-  SettingsRow(content, 52, "Auto-enable",
+  auto *enable_row = SettingsRow(content, 52, "Auto-enable",
       "Turn Wi-Fi on when recovery starts", RecoveryWifiAutoEnable(),
       [](bool enabled) { return RecoverySetWifiAutoEnable(enabled); }, message);
-  SettingsRow(content, 232, "Auto-connect",
+  const int connect_row_y = 52 + lv_obj_get_height(enable_row) + 20;
+  auto *connect_row = SettingsRow(content, connect_row_y, "Auto-connect",
       "Reconnect to a saved network automatically", RecoveryWifiAutoConnect(),
       [](bool enabled) { return RecoverySetWifiAutoConnect(enabled); }, message);
 
-  SectionCaption(content, 486, "DEVELOPER ACCESS");
+  lv_obj_set_y(message, connect_row_y + lv_obj_get_height(connect_row) + 24);
+  lv_obj_update_layout(message);
+  const int developer_y = std::max(486, static_cast<int>(
+      lv_obj_get_y(message) + lv_obj_get_height(message) + 28));
+  SectionCaption(content, developer_y, "DEVELOPER ACCESS");
   auto *adb_card = lv_obj_create(content);
   state->adb_card = adb_card;
   Panel(adb_card, 36, kMainSheet);
-  lv_obj_set_pos(adb_card, 0, 538);
+  lv_obj_set_pos(adb_card, 0, developer_y + 52);
   lv_obj_set_size(adb_card, width, 1108);
   lv_obj_set_style_border_width(adb_card, 1, 0);
   lv_obj_set_style_border_color(adb_card, kMainLine, 0);
@@ -433,6 +482,7 @@ void ShowWifiSettings(WifiUi *state) {
   });
 
   auto *line = lv_obj_create(adb_card);
+  state->adb_line = line;
   Clear(line);
   lv_obj_set_pos(line, 32, 172);
   lv_obj_set_size(line, width - 64, 1);
@@ -441,6 +491,7 @@ void ShowWifiSettings(WifiUi *state) {
 
   auto *address_title = Label(adb_card, "CONNECTION ADDRESS",
                               &lv_font_montserrat_18, kMuted);
+  state->adb_address_title = address_title;
   lv_obj_set_style_text_letter_space(address_title, 3, 0);
   lv_obj_set_pos(address_title, 36, 214);
   state->adb_endpoint = Label(adb_card, "Not available",
@@ -449,6 +500,7 @@ void ShowWifiSettings(WifiUi *state) {
   lv_obj_set_width(state->adb_endpoint, width - 72);
 
   auto *command_card = lv_obj_create(adb_card);
+  state->adb_command_card = command_card;
   Panel(command_card, 26, kMainPanel);
   lv_obj_set_pos(command_card, 32, 334);
   lv_obj_set_size(command_card, width - 64, 128);
@@ -460,12 +512,13 @@ void ShowWifiSettings(WifiUi *state) {
       &lv_font_montserrat_36, kMutedStrong);
   lv_obj_set_pos(state->adb_command, 82, 34);
   lv_obj_set_width(state->adb_command, width - 190);
-  lv_label_set_long_mode(state->adb_command, LV_LABEL_LONG_DOT);
+  lv_label_set_long_mode(state->adb_command, LV_LABEL_LONG_WRAP);
 
   auto *steps = Label(adb_card,
       "On the computer, open a terminal and run the command above.\n"
       "Then use  adb devices  to confirm the connection.",
       &lv_font_montserrat_24, kMuted);
+  state->adb_steps = steps;
   lv_obj_set_pos(steps, 36, 494);
   lv_obj_set_width(steps, width - 72);
   lv_obj_set_style_text_line_space(steps, 16, 0);
@@ -495,14 +548,19 @@ void ShowWifiSettings(WifiUi *state) {
   lv_obj_set_pos(pair_label, 24, 18);
   state->pair_command = Label(state->pair_panel, "adb pair",
                               &lv_font_montserrat_36, kText);
-  lv_obj_set_pos(state->pair_command, 24, 50);
+  lv_obj_update_layout(pair_label);
+  const int pairing_y = std::max(50, static_cast<int>(18 + lv_obj_get_height(pair_label) + 12));
+  lv_obj_set_pos(state->pair_command, 24, pairing_y);
   lv_obj_set_width(state->pair_command, width - 330);
   auto *code_title = Label(state->pair_panel, "CODE", &lv_font_montserrat_16,
                            kMuted);
   lv_obj_align(code_title, LV_ALIGN_TOP_RIGHT, -28, 18);
   state->pair_code = Label(state->pair_panel, "000000",
                            &lv_font_montserrat_36, kAccent);
-  lv_obj_align(state->pair_code, LV_ALIGN_TOP_RIGHT, -28, 54);
+  lv_obj_align(state->pair_code, LV_ALIGN_TOP_RIGHT, -28, pairing_y);
+  lv_obj_update_layout(state->pair_command);
+  lv_obj_set_height(state->pair_panel, std::max(154, static_cast<int>(
+      pairing_y + lv_obj_get_height(state->pair_command) + 24)));
 
   state->paired_caption = Label(adb_card, "PAIRED COMPUTERS",
                                 &lv_font_montserrat_18, kMuted);
@@ -590,6 +648,9 @@ void ShowWifiSettings(WifiUi *state) {
       &lv_font_montserrat_20, kMuted);
   lv_obj_set_pos(guide_note, 28, 382);
   lv_obj_set_width(guide_note, width - 120);
+  lv_obj_update_layout(guide_note);
+  lv_obj_set_height(state->fastboot_guide, std::max(430, static_cast<int>(
+      382 + lv_obj_get_height(guide_note) + 24)));
 
   auto *security = Label(content,
       "ADB is encrypted. Fastboot is reachable only through an authenticated "
@@ -671,7 +732,7 @@ void EmptyNetworkCard(WifiUi *state, const char *icon, const char *title,
   AnimateEnter(card, 20, 10);
 }
 
-void NetworkCard(WifiUi *state, int y, const WifiNetwork &network) {
+int NetworkCard(WifiUi *state, int y, const WifiNetwork &network) {
   auto *card = lv_button_create(state->scene.list);
   // Connected rows stay on the normal page surface. Connectivity is shown
   // with green details only, without a competing cyan selection wash.
@@ -714,7 +775,15 @@ void NetworkCard(WifiUi *state, int y, const WifiNetwork &network) {
   auto *end = Label(card, trailing, &lv_font_montserrat_32,
                     network.connected ? kGreen : kMutedStrong);
   lv_obj_align(end, LV_ALIGN_RIGHT_MID, -38, 0);
+  lv_obj_update_layout(name);
+  lv_obj_set_y(copy, std::max(98, static_cast<int>(
+      lv_obj_get_y(name) + lv_obj_get_height(name) + 12)));
+  lv_obj_update_layout(copy);
+  const int height = std::max(174, static_cast<int>(
+      lv_obj_get_y(copy) + lv_obj_get_height(copy) + 24));
+  lv_obj_set_height(card, height);
   AnimateEnter(card, 18 + static_cast<uint32_t>(y / 8), 10);
+  return height;
 }
 
 void PasswordDialog(WifiUi *state, const WifiNetwork &network) {
@@ -727,21 +796,27 @@ void PasswordDialog(WifiUi *state, const WifiNetwork &network) {
 
   auto *sheet = lv_obj_create(overlay);
   Panel(sheet, 48, kMainSheet);
-  lv_obj_set_size(sheet, 1312, 1260);
+  const int sheet_width = std::min(1312, lv_obj_get_width(state->screen) - 128);
+  const int content_width = sheet_width - 96;
+  lv_obj_set_size(sheet, sheet_width, 1260);
   lv_obj_align(sheet, LV_ALIGN_BOTTOM_MID, 0, -64);
   lv_obj_set_style_pad_all(sheet, 48, 0);
   auto *title = Label(sheet, network.ssid.c_str(), &lv_font_montserrat_48, kText);
-  lv_obj_set_width(title, 1180);
+  lv_obj_set_width(title, content_width);
   lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
   const std::string password_hint =
       i18n::Format("%s network password", network.security.c_str());
   auto *hint = Label(sheet, password_hint.c_str(),
                      &lv_font_montserrat_24, kMuted);
-  lv_obj_set_pos(hint, 0, 76);
+  lv_obj_update_layout(title);
+  const int hint_y = std::max(76, static_cast<int>(lv_obj_get_height(title) + 18));
+  lv_obj_set_pos(hint, 0, hint_y);
 
   auto *input = TextArea(sheet);
-  lv_obj_set_pos(input, 0, 130);
-  lv_obj_set_size(input, 1216, 126);
+  lv_obj_update_layout(hint);
+  const int input_y = std::max(130, static_cast<int>(hint_y + lv_obj_get_height(hint) + 24));
+  lv_obj_set_pos(input, 0, input_y);
+  lv_obj_set_size(input, content_width, 126);
   lv_textarea_set_one_line(input, true);
   lv_textarea_set_password_mode(input, true);
   lv_textarea_set_max_length(input, 63);
@@ -760,13 +835,19 @@ void PasswordDialog(WifiUi *state, const WifiNetwork &network) {
   // LVGL keyboards default to BOTTOM_MID; use sheet-local coordinates so the
   // complete keyboard remains between the password field and action buttons.
   lv_obj_set_align(keyboard, LV_ALIGN_TOP_LEFT);
-  lv_obj_set_pos(keyboard, 0, 286);
-  lv_obj_set_size(keyboard, 1216, 650);
+  const int keyboard_y = input_y + 126 + 30;
+  lv_obj_set_pos(keyboard, 0, keyboard_y);
+  const int keyboard_height = std::clamp(
+      static_cast<int>(lv_obj_get_height(state->screen)) - 128 - keyboard_y - 60 - 116 - 96,
+      180, 650);
+  lv_obj_set_size(keyboard, content_width, keyboard_height);
   lv_keyboard_set_textarea(keyboard, input);
 
   auto *cancel = Button(sheet, "Cancel", [overlay] { CloseOverlay(overlay); });
-  lv_obj_set_pos(cancel, 0, 996);
-  lv_obj_set_size(cancel, 580, 116);
+  const int action_y = keyboard_y + keyboard_height + 60;
+  lv_obj_set_pos(cancel, 0, action_y);
+  const int button_width = (content_width - 56) / 2;
+  lv_obj_set_size(cancel, button_width, 116);
   auto *connect = Button(sheet, "Connect", [state, network, input, overlay] {
     WifiRequest request;
     request.operation = WifiOperation::kConnect;
@@ -775,8 +856,9 @@ void PasswordDialog(WifiUi *state, const WifiNetwork &network) {
     CloseOverlay(overlay);
     Dispatch(state, std::move(request));
   }, true);
-  lv_obj_set_pos(connect, 636, 996);
-  lv_obj_set_size(connect, 580, 116);
+  lv_obj_set_pos(connect, button_width + 56, action_y);
+  lv_obj_set_height(sheet, action_y + 116 + 96);
+  lv_obj_set_size(connect, button_width, 116);
   lv_obj_send_event(input, LV_EVENT_CLICKED, nullptr);
   AnimateEnter(sheet, 0, 42);
 }
@@ -867,8 +949,7 @@ void Populate(WifiUi *state) {
   }
   int y = 0;
   for (const auto &network : state->snapshot.networks) {
-    NetworkCard(state, y, network);
-    y += 192;
+    y += NetworkCard(state, y, network) + 18;
   }
 }
 
@@ -943,13 +1024,13 @@ WifiScene BuildWifiScene(lv_obj_t *screen, ActionCallback callback, void *contex
   const bool landscape = Landscape(screen);
   auto *settings = Button(screen, LV_SYMBOL_SETTINGS "  Wi-Fi settings",
                           [state] { ShowWifiSettings(state); });
-  lv_obj_set_size(settings, 360, 104);
+  lv_obj_set_size(settings, kDeviceFontScale > 100 ? 520 : 360, 104);
   lv_obj_align(settings, LV_ALIGN_TOP_RIGHT, -64, landscape ? 184 : 232);
   lv_obj_set_style_radius(settings, 32, 0);
   auto *panel = lv_obj_create(screen);
   Panel(panel, 36, kMainSheet);
   state->hero = panel;
-  lv_obj_set_pos(panel, 64, landscape ? 350 : 420);
+  lv_obj_set_pos(panel, 64, landscape ? 350 : (kDeviceFontScale > 100 ? 450 : 420));
   lv_obj_set_size(panel, landscape ? 1450 : 1312,
                   landscape ? 520 : 352);
   lv_obj_set_style_border_width(panel, 0, 0);
@@ -976,11 +1057,18 @@ WifiScene BuildWifiScene(lv_obj_t *screen, ActionCallback callback, void *contex
   lv_obj_set_pos(state->scene.detail, 198, 108);
   lv_obj_set_width(state->scene.detail, 690);
   lv_label_set_long_mode(state->scene.detail, LV_LABEL_LONG_DOT);
+  lv_obj_update_layout(state->scene.status);
+  lv_obj_set_y(state->scene.detail, std::max(108, static_cast<int>(
+      lv_obj_get_y(state->scene.status) + lv_obj_get_height(state->scene.status) + 12)));
   state->scene.toggle = lv_button_create(panel);
   Panel(state->scene.toggle, 38, kMainPanel);
   Interactive(state->scene.toggle, kMainSelected);
-  lv_obj_set_pos(state->scene.toggle, 930, 50);
-  lv_obj_set_size(state->scene.toggle, 294, 96);
+  const int radio_width = 294 + ControlSize(108) - 108;
+  const int radio_x = 1224 - radio_width;
+  lv_obj_set_pos(state->scene.toggle, radio_x, 50);
+  lv_obj_set_size(state->scene.toggle, radio_width, 96 + ControlSize(60) - 60);
+  lv_obj_set_width(state->scene.status, std::min(690, radio_x - 230));
+  lv_obj_set_width(state->scene.detail, std::min(690, radio_x - 230));
   lv_obj_set_style_border_width(state->scene.toggle, 1, 0);
   lv_obj_set_style_border_color(state->scene.toggle, kMainLine, 0);
   lv_obj_set_style_border_opa(state->scene.toggle, LV_OPA_30, 0);

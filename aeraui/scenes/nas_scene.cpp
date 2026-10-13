@@ -508,7 +508,7 @@ lv_obj_t *ProtocolButton(NasUi *state, lv_obj_t *parent, int x,
 }
 
 void StyleSwitch(lv_obj_t *toggle, bool enabled) {
-  lv_obj_set_size(toggle, 108, 60);
+  SizeSwitch(toggle);
   lv_obj_remove_flag(toggle, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_set_style_bg_opa(toggle, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_set_style_bg_color(toggle, kMainLine, LV_PART_MAIN);

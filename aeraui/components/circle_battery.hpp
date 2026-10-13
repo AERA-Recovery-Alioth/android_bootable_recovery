@@ -26,9 +26,10 @@ inline void ResizeCircleBattery(const CircleBattery &battery, int size) {
   lv_obj_set_size(battery.ring, size - inset * 2, size - inset * 2);
   lv_obj_set_style_arc_width(battery.ring, stroke, LV_PART_MAIN);
   lv_obj_set_style_arc_width(battery.ring, stroke, LV_PART_INDICATOR);
-  const lv_font_t *font = size < 56 ? &lv_font_montserrat_18 :
-      size < 68 ? &lv_font_montserrat_24 : size < 84 ? &lv_font_montserrat_28 : &lv_font_montserrat_32;
-  lv_obj_set_style_text_font(battery.number, UiFont(font), 0);
+  // Percentage is intrinsic icon geometry: body-font enlargement must not
+  // make two digits wider than a user-selected small battery ring.
+  lv_obj_set_style_text_font(battery.number,
+      fonts::DisplayFont(static_cast<uint32_t>(size * 2 / 5)), 0);
   lv_obj_center(battery.number);
   lv_obj_align(battery.charge, LV_ALIGN_BOTTOM_RIGHT, -2, -2);
 }
@@ -70,7 +71,7 @@ inline void UpdateCircleBattery(const CircleBattery &battery, int percent, bool 
   lv_arc_set_value(battery.ring, level);
   lv_obj_set_style_arc_color(battery.ring,
       level <= 15 ? kRed : charging ? kGreen : kText, LV_PART_INDICATOR);
-  char text[8] = "";
+  char text[16] = "";
   if (percent < 0) snprintf(text, sizeof(text), "--");
   else if (level < 100) snprintf(text, sizeof(text), "%d", level);
   lv_label_set_text(battery.number, text);

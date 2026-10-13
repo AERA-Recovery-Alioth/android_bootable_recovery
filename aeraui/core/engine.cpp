@@ -25,6 +25,7 @@
 #include <vector>
 
 #include <android/log.h>
+#include <cutils/properties.h>
 #include <lvgl.h>
 #include <minuitwrp/minui.h>
 #include <pixelflinger/pixelflinger.h>
@@ -434,8 +435,10 @@ public:
       lv_display_delete(display_);
       display_ = nullptr;
     }
-    if (lv_is_initialized())
+    if (lv_is_initialized()) {
+      fonts::ShutdownFallbackFonts();
       lv_deinit();
+    }
     gpu_renderer_.Shutdown();
     lv_draw_opengles_set_enabled(false);
     if (draw_buffer_ != nullptr) {
@@ -1426,6 +1429,10 @@ private:
     design::ApplyAppearanceMode(static_cast<int>(RecoveryAppearanceMode()));
     design::ApplySurfaceStyle(static_cast<int>(RecoverySurfaceStyle()));
     design::ApplyAccent(RecoveryAccentColor());
+    design::kDeviceFontScale = std::clamp(
+        property_get_int32("ro.aera.ui.font_scale", 100), 100, 200);
+    design::kDeviceControlScale = std::clamp(
+        property_get_int32("ro.aera.ui.control_scale", 100), 100, 150);
     design::ApplyInterfaceSize(static_cast<int>(RecoveryInterfaceSize()));
     const std::string wallpaper_path = RecoveryWallpaperPath();
     if (wallpaper_path.empty()) {

@@ -194,9 +194,24 @@ inline void Header(lv_obj_t *screen, const char *title, const char *subtitle,
   auto *heading = Label(screen, title, &lv_font_montserrat_48, kText);
   const bool landscape = Landscape(screen);
   lv_obj_set_pos(heading, 80, landscape ? 210 : 252);
-  auto *copy = Label(screen, subtitle, &lv_font_montserrat_32, kMuted);
+  auto *copy = Label(screen, subtitle,
+      kDeviceFontScale > 100 ? &lv_font_montserrat_24 : &lv_font_montserrat_32, kMuted);
   lv_obj_set_pos(copy, landscape ? 600 : 80, landscape ? 220 : 338);
-  lv_obj_set_width(copy, landscape ? lv_obj_get_width(screen) - 680 : 1280);
+  lv_obj_set_width(copy, landscape ? lv_obj_get_width(screen) - 680 : lv_obj_get_width(screen) - 160);
+  lv_obj_update_layout(heading);
+  if (landscape) {
+    const int heading_limit = (lv_obj_get_width(screen) - 160) / 2;
+    if (lv_obj_get_width(heading) > heading_limit)
+      FitLabelToLines(heading, heading_limit, 1,
+          {&lv_font_montserrat_48, &lv_font_montserrat_40, &lv_font_montserrat_32});
+    lv_obj_update_layout(heading);
+    const int copy_x = std::max(600, static_cast<int>(
+        lv_obj_get_x(heading) + lv_obj_get_width(heading) + 40));
+    lv_obj_set_x(copy, copy_x);
+    FitLabelToLines(copy, lv_obj_get_width(screen) - copy_x - 80, 2,
+        {&lv_font_montserrat_24, &lv_font_montserrat_20, &lv_font_montserrat_18});
+  } else lv_obj_set_y(copy, std::max(338,
+      static_cast<int>(lv_obj_get_y(heading) + lv_obj_get_height(heading) + 16)));
   AnimateEnter(heading, 0, 12);
 }
 
@@ -373,12 +388,12 @@ inline lv_obj_t *Navigation(lv_obj_t *screen, Action active,
     else lv_obj_align(text, LV_ALIGN_BOTTOM_MID, 0,
                       minimal ? -10 : landscape ? -12 : -20);
     if (selected) {
-      lv_obj_set_style_transform_scale(icon, 192, 0);
+      lv_obj_set_style_transform_scale(icon, ControlSize(192), 0);
       lv_obj_set_style_translate_y(icon, 8, 0);
       lv_anim_t icon_pop;
       lv_anim_init(&icon_pop);
       lv_anim_set_var(&icon_pop, icon);
-      lv_anim_set_values(&icon_pop, 192, 256);
+      lv_anim_set_values(&icon_pop, ControlSize(192), ControlSize(256));
       lv_anim_set_duration(&icon_pop, 380);
       lv_anim_set_delay(&icon_pop, 55);
       lv_anim_set_path_cb(&icon_pop, lv_anim_path_overshoot);
@@ -405,7 +420,7 @@ inline lv_obj_t *Navigation(lv_obj_t *screen, Action active,
 }
 
 inline void StyleSwitch(lv_obj_t *toggle, bool enabled) {
-  lv_obj_set_size(toggle, 108, 60);
+  SizeSwitch(toggle);
   lv_obj_remove_flag(toggle, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_set_style_bg_opa(toggle, LV_OPA_COVER, LV_PART_MAIN);
   lv_obj_set_style_bg_color(toggle, kMainLine, LV_PART_MAIN);
@@ -418,7 +433,7 @@ inline void StyleSwitch(lv_obj_t *toggle, bool enabled) {
   lv_obj_set_style_bg_color(toggle, kText, LV_PART_KNOB);
   lv_obj_set_style_bg_opa(toggle, LV_OPA_COVER, LV_PART_KNOB);
   lv_obj_set_style_radius(toggle, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-  lv_obj_set_style_pad_all(toggle, -8, LV_PART_KNOB);
+  lv_obj_set_style_pad_all(toggle, -ControlSize(8), LV_PART_KNOB);
   if (enabled) lv_obj_add_state(toggle, LV_STATE_CHECKED);
   else lv_obj_remove_state(toggle, LV_STATE_CHECKED);
 }
@@ -446,6 +461,12 @@ inline lv_obj_t *SettingsRow(lv_obj_t *parent, int y, const char *title,
   lv_obj_set_width(copy, width - 250);
   FitLabelToLines(copy, width - 250, 2,
                   {&lv_font_montserrat_20, &lv_font_montserrat_18});
+  lv_obj_update_layout(name);
+  lv_obj_set_y(copy, std::max(88,
+      static_cast<int>(lv_obj_get_y(name) + lv_obj_get_height(name) + 12)));
+  lv_obj_update_layout(copy);
+  lv_obj_set_height(row, std::max(160,
+      static_cast<int>(lv_obj_get_y(copy) + lv_obj_get_height(copy) + 24)));
   auto *toggle = lv_switch_create(row);
   StyleSwitch(toggle, enabled);
   lv_obj_align(toggle, LV_ALIGN_RIGHT_MID, -32, 0);
@@ -462,6 +483,7 @@ inline lv_obj_t *SettingsRow(lv_obj_t *parent, int y, const char *title,
       lv_obj_set_style_text_color(message, kRed, 0);
     }
   });
+  lv_obj_update_layout(row);
   return row;
 }
 
