@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <chrono>
 
 #include "drivers/opengles/glad/include/glad/egl.h"
 #include "drivers/opengles/glad/include/glad/gles2.h"
@@ -25,7 +26,7 @@ namespace {
 constexpr char kLogTag[] = "AeraGpu";
 constexpr char kEglDriver[] = "/vendor/lib64/egl/libEGL_adreno.so";
 constexpr char kGlesDriver[] = "/vendor/lib64/egl/libGLESv2_adreno.so";
-constexpr char kNativeWindowLibrary[] = "/vendor/lib64/libnativewindow.so";
+constexpr char kNativeWindowLibrary[] = "libnativewindow.so";
 constexpr uint32_t Fourcc(char a, char b, char c, char d) {
   return static_cast<uint32_t>(a) | (static_cast<uint32_t>(b) << 8) |
          (static_cast<uint32_t>(c) << 16) | (static_cast<uint32_t>(d) << 24);
@@ -382,6 +383,7 @@ bool GpuRenderer::Present(lv_display_t* display) {
   if (!ready_ || display == nullptr)
     return false;
 
+  const auto start = std::chrono::steady_clock::now();
   const unsigned int index = next_buffer_;
   glBindFramebuffer(GL_FRAMEBUFFER, framebuffers_[index]);
   glViewport(0, 0, width_, height_);
@@ -391,12 +393,39 @@ bool GpuRenderer::Present(lv_display_t* display) {
   // The native scanout and LVGL texture share the panel's portrait orientation.
   // No additional axis mirroring is required for the final composition.
   lv_opengles_render_display_texture(display, false, false);
+  const auto submitted = std::chrono::steady_clock::now();
   glFinish();
-  if (glGetError() != GL_NO_ERROR || gr_drm_present(scanouts_[index]) != 0)
+  const auto completed = std::chrono::steady_clock::now();
+  if (glGetError() != GL_NO_ERROR) return false;
+  if (gr_drm_present_with_events(scanouts_[index]) != 0) {
+    // Ownership cannot be proven if both event synchronization and the
+    // blocking drain fail. Prevent every subsequent scanout write.
+    ready_ = false;
     return false;
+  }
+  const auto presented = std::chrono::steady_clock::now();
+  auto microseconds = [](auto elapsed) {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count());
+  };
+  frame_timing_ = {microseconds(submitted - start),
+                   microseconds(completed - submitted),
+                   microseconds(presented - completed)};
 
   next_buffer_ = 1U - index;
   return true;
+}
+
+void GpuRenderer::ReleaseLvglResources() {
+  if (!driver_initialized_) return;
+  if (egl_display_ != nullptr && egl_context_ != nullptr &&
+      egl_surface_ != nullptr && eglMakeCurrent != nullptr)
+    eglMakeCurrent(static_cast<EGLDisplay>(egl_display_),
+                   static_cast<EGLSurface>(egl_surface_),
+                   static_cast<EGLSurface>(egl_surface_),
+                   static_cast<EGLContext>(egl_context_));
+  lv_opengles_deinit();
+  driver_initialized_ = false;
 }
 
 void GpuRenderer::Shutdown() {
@@ -407,8 +436,7 @@ void GpuRenderer::Shutdown() {
                    static_cast<EGLSurface>(egl_surface_),
                    static_cast<EGLSurface>(egl_surface_),
                    static_cast<EGLContext>(egl_context_));
-    if (driver_initialized_)
-      lv_opengles_deinit();
+    ReleaseLvglResources();
     if (glDeleteFramebuffers != nullptr)
       glDeleteFramebuffers(2, framebuffers_);
     if (glDeleteTextures != nullptr)
@@ -439,9 +467,14 @@ void GpuRenderer::Shutdown() {
       : reinterpret_cast<ReleaseHardwareBuffer>(
             dlsym(nativewindow_library_, "AHardwareBuffer_release"));
   for (unsigned int i = 0; i < 2; ++i) {
-    if (scanouts_[i] != nullptr && release_scanout != nullptr)
-      release_scanout(scanouts_[i]);
-    if (hardware_buffers_[i] != nullptr && release_buffer != nullptr)
+    const bool scanout_released = scanouts_[i] == nullptr ||
+        (release_scanout != nullptr && release_scanout(scanouts_[i]) == 0);
+    // A failed replacement leaves KMS ownership uncertain. Quarantine the
+    // imported surface and its hardware-buffer reference for process lifetime.
+    if (!scanout_released)
+      __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                          "Retaining scanout buffer after failed DRM replacement");
+    if (scanout_released && hardware_buffers_[i] != nullptr && release_buffer != nullptr)
       release_buffer(hardware_buffers_[i]);
     hardware_buffers_[i] = nullptr;
   }

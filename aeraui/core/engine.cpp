@@ -57,10 +57,14 @@ namespace {
 
 constexpr char kLogTag[] = "AERA UI";
 constexpr uint32_t kBytesPerPixel = 4;
-constexpr uint32_t kTargetRefreshHz = 120;
-// Rendering and DRM presentation consume several milliseconds on dodge. Wake
-// after 2 ms so the complete pipeline still fits a 120 Hz frame deadline.
-constexpr uint32_t kFrameIntervalMs = 2;
+#ifndef AERA_UI_FRAMERATE
+#define AERA_UI_FRAMERATE 120
+#endif
+constexpr uint32_t kTargetRefreshHz = AERA_UI_FRAMERATE;
+static_assert(kTargetRefreshHz > 0 && kTargetRefreshHz <= 240);
+constexpr uint32_t kRefreshPeriodMs = std::max(1U, 1000U / kTargetRefreshHz);
+// Poll input faster than the refresh timer to leave room for composition.
+constexpr uint32_t kFrameIntervalMs = std::max(1U, kRefreshPeriodMs / 4);
 constexpr uint32_t kBufferAlignment = 64;
 
 enum class UpdateTask {
@@ -303,6 +307,7 @@ public:
       Shutdown();
       return false;
     }
+    lv_timer_set_period(lv_display_get_refr_timer(display_), kRefreshPeriodMs);
     lv_display_set_user_data(display_, this);
     if (gpu_accelerated_) {
       // The OpenGL texture display supplies its own dummy LVGL draw buffer.
@@ -435,6 +440,7 @@ public:
       lv_display_delete(display_);
       display_ = nullptr;
     }
+    gpu_renderer_.ReleaseLvglResources();
     if (lv_is_initialized()) {
       fonts::ShutdownFallbackFonts();
       lv_deinit();
@@ -493,7 +499,7 @@ public:
   uint32_t RunFrame() {
     if (!initialized_)
       return kFrameIntervalMs;
-    if (suspended_)
+    if (suspended_ || (gpu_accelerated_ && !gpu_renderer_.IsReady()))
       return 250;
 #ifndef TW_OEM_BUILD
     const int rpc_fd = aera::rpc::Channel::InputFd();
@@ -652,6 +658,7 @@ public:
     PollAutomaticUpdates();
     PollPcConnection();
     PollRecentsHold();
+    frame_started_ = std::chrono::steady_clock::now();
     const uint32_t next = lv_timer_handler();
 #ifndef TW_OEM_BUILD
     // Capture only after LVGL has flushed and DRM exposes the newly presented
@@ -3645,10 +3652,20 @@ private:
       submit_window_start_ms_ = now;
       submitted_frames_ = 1;
       last_submit_ms_ = now;
+      draw_us_ = gpu_wait_us_ = presentation_us_ = 0;
       return;
     }
 
     ++submitted_frames_;
+    if (gpu_accelerated_) {
+      const auto& timing = gpu_renderer_.LastFrameTiming();
+      const uint64_t frame_us = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - frame_started_).count();
+      const uint64_t present_us = timing.composition_us + timing.gpu_wait_us + timing.presentation_us;
+      draw_us_ += frame_us > present_us ? frame_us - present_us : 0;
+      gpu_wait_us_ += timing.gpu_wait_us;
+      presentation_us_ += timing.presentation_us;
+    }
     last_submit_ms_ = now;
     const uint32_t elapsed = now - submit_window_start_ms_;
     if (elapsed < 1000)
@@ -3660,6 +3677,13 @@ private:
         ANDROID_LOG_INFO, kLogTag,
         "active animation submitted %.1f fps (%u frames / %u ms)", fps,
         submitted_frames_, elapsed);
+    if (gpu_accelerated_) {
+      const double samples = static_cast<double>(submitted_frames_ - 1) * 1000.0;
+      __android_log_print(ANDROID_LOG_INFO, kLogTag,
+          "frame timing: draw %.2f ms, GPU completion %.2f ms, KMS presentation %.2f ms",
+          draw_us_ / samples, gpu_wait_us_ / samples, presentation_us_ / samples);
+    }
+    draw_us_ = gpu_wait_us_ = presentation_us_ = 0;
     submit_window_start_ms_ = now;
     submitted_frames_ = 1;
   }
@@ -3799,6 +3823,8 @@ private:
   Action pending_action_ = Action::kNone;
   DecryptionCompletion decryption_completion_ = DecryptionCompletion::kNone;
   uint32_t submit_window_start_ms_ = 0;
+  std::chrono::steady_clock::time_point frame_started_;
+  uint64_t draw_us_ = 0, gpu_wait_us_ = 0, presentation_us_ = 0;
   uint32_t last_submit_ms_ = 0;
   uint32_t submitted_frames_ = 0;
   uint32_t last_operation_update_ = 0;

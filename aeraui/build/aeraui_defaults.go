@@ -117,7 +117,19 @@ func aeraHostDefaultsFactory() android.Module {
 }
 
 func aeraUiDefaults(ctx android.BaseContext) []string {
-	return append(aeraUiLanguageFlags(ctx), aeraRootManagerFlags(ctx)...)
+	flags := append(aeraUiLanguageFlags(ctx), aeraRootManagerFlags(ctx)...)
+	// AERA_FRAMERATE maps to TW_FRAMERATE; its established export is lowercase
+	// in twrpGlobalVars, not the backend feature namespace.
+	value := ctx.Config().VendorConfig("twrpGlobalVars").String("tw_framerate")
+	if value != "" {
+		rate, err := strconv.Atoi(value)
+		if err != nil || rate < 1 || rate > 240 {
+			ctx.ModuleErrorf("TW_FRAMERATE must be an integer from 1 through 240")
+			return flags
+		}
+		flags = append(flags, fmt.Sprintf("-DAERA_UI_FRAMERATE=%d", rate))
+	}
+	return flags
 }
 
 func aeraUiDefaultsFactory() android.Module {

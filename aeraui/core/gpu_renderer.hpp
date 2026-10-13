@@ -27,7 +27,15 @@ class GpuRenderer final {
 
   bool Initialize(int32_t width, int32_t height);
   lv_display_t* CreateDisplay(int32_t logical_width, int32_t logical_height);
+  struct FrameTiming {
+    uint64_t composition_us = 0;
+    uint64_t gpu_wait_us = 0;
+    uint64_t presentation_us = 0;
+  };
   bool Present(lv_display_t* display);
+  const FrameTiming& LastFrameTiming() const { return frame_timing_; }
+  // Release LVGL allocations before lv_deinit; keep EGL alive for draw cleanup.
+  void ReleaseLvglResources();
   void Shutdown();
   bool IsReady() const { return ready_; }
 
@@ -50,6 +58,7 @@ class GpuRenderer final {
   unsigned int next_buffer_ = 0;
   bool driver_initialized_ = false;
   bool ready_ = false;
+  FrameTiming frame_timing_;
 };
 
 }  // namespace aeraui
