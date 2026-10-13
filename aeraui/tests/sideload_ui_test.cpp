@@ -1,11 +1,20 @@
 #include "scene.hpp"
 #include "ui_components.hpp"
+#include "../../aera_remote/pc_connection.hpp"
 
 #include <cassert>
 #include <chrono>
 #include <cstring>
 #include <thread>
 #include <vector>
+
+namespace aera::pc {
+BackupCancellation GetBackupCancellation() { return {}; }
+BackupTransferStatistics GetBackupTransferStatistics() { return {}; }
+}
+namespace aeraui::wallpaper {
+bool Attach(lv_obj_t *) { return false; }
+}
 
 using namespace aeraui;
 
@@ -43,6 +52,7 @@ int RecoveryDockTransparency() { return 60; }
 int RecoveryDockBlur() { return 24; }
 bool RecoveryDockHideInApps() { return false; }
 int RecoveryProgress() { return 0; }
+PayloadFlashProgress RecoveryPayloadFlashProgress() { return {}; }
 std::string RecoveryOperationDetail() { return {}; }
 std::string RecoveryInstallerStatus() { return g_installer_status; }
 InstallerPresentation RecoveryInstallerPresentation() { return {}; }

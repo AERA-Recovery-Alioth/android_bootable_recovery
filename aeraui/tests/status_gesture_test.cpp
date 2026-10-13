@@ -287,6 +287,32 @@ int main() {
   lv_obj_send_event(state.bar, LV_EVENT_PRESS_LOST, nullptr);
   Touch(400, 480, false); Settle();
   assert(state.shade == nullptr && !state.dragging);
+  wifi_connection.connected = true;
+  wifi_connection.ssid = "A very long network name used to check status collisions";
+  for (int width : {1080, 1440})
+  for (int scale : {100, 125, 150})
+  for (auto mode : {plugin_api::MirrorMode::kOff, plugin_api::MirrorMode::kWifi}) {
+    lv_display_set_resolution(display, width, width == 1080 ? 2400 : 3168);
+    design::kDeviceFontScale = scale; design::ApplyInterfaceSize(3);
+    mirror_mode = mode;
+    auto* page = lv_obj_create(nullptr);
+    AttachStatusBar(page, [](Action, void*) {}, nullptr, StatusBarAction::kNone, true);
+    auto* status = static_cast<StatusState*>(
+        lv_event_dsc_get_user_data(lv_obj_get_event_dsc(page, 0)));
+    assert(status && status->bar);
+    status->battery = 100; status->charging = true;
+    Refresh(status, false); lv_obj_update_layout(page);
+    if (!lv_obj_has_flag(status->wifi, LV_OBJ_FLAG_HIDDEN)) {
+      const int left = lv_obj_get_x(status->wifi);
+      const int right = left + lv_obj_get_width(status->wifi);
+      assert(right + 24 <= lv_obj_get_x(status->battery_text));
+      for (auto* indicator : {status->clock, status->mirror, status->download,
+                             status->recording_dot, status->recording})
+        if (!lv_obj_has_flag(indicator, LV_OBJ_FLAG_HIDDEN))
+          assert(left >= lv_obj_get_x(indicator) + lv_obj_get_width(indicator) + 24);
+    }
+    lv_obj_delete(page);
+  }
   lv_indev_delete(input);
   CheckTrafficLayout(display);
   lv_display_delete(display); lv_deinit();

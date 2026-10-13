@@ -1,3 +1,4 @@
+#include "../scenes/appvault_layout.hpp"
 #include "scene.hpp"
 #include "ui_components.hpp"
 #include "pc_transfer_banner.hpp"
@@ -50,7 +51,7 @@ static bool haptics_available = true;
 static bool early_save_succeeds = true;
 static int autosave_count = 0;
 static int haptic_durations[] = {40, 40, 160};
-static InterfaceSize interface_size = InterfaceSize::kNormal;
+static InterfaceSize interface_size = InterfaceSize::kSpacious;
 static DockLayout dock_layout = DockLayout::kGlass;
 static std::string active_slot = "A";
 static bool wifi_auto_enable = false;
@@ -189,7 +190,7 @@ void RecoveryVibrate(Haptic) {}
 void RecoveryTerminalStart(int, int, int, int) {}
 bool RecoveryTerminalPoll() { return false; }
 int RecoveryTerminalUpdateCounter() { return 0; }
-std::vector<std::string> RecoveryTerminalLines(size_t) { return {}; }
+std::vector<std::string> RecoveryTerminalLines(size_t) { return {"$ setenforce 0", "$"}; }
 void RecoveryTerminalWrite(const std::string &) {}
 void RecoveryTerminalSendKey(TerminalKey) {}
 void RecoveryTerminalClear() {}
@@ -202,6 +203,8 @@ int32_t StatusBarHeight() { return 165; }
 bool StatusBarShadeOpen() { return false; }
 void RefreshStatusBars() {}
 std::vector<Volume> RecoveryVolumes(const std::string &kind) {
+  if (kind == "mount") return {{"Metadata", "/metadata", 40960000, true},
+      {"Data", "/data", 23000000000, false}};
   if (kind == "wipe") return {{"Dalvik / ART cache","DALVIK",0},{"Data","/data",23000000000},
     {"Internal storage","INTERNAL",12000000000},{"Metadata","/metadata",40960000}};
   return {{"Metadata","/metadata",40960000},{"Data","/data",23000000000},{"Vendor Boot","/vendor_boot",100663296},
@@ -516,8 +519,12 @@ int main(int argc,char **argv) {
     assert(lv_font_get_glyph_dsc(latin_font, &glyph, codepoint, 0));
     assert(glyph.adv_w > 0);
   }
+  const bool native_alioth = std::getenv("AERA_TEST_NATIVE_ALIOTH") != nullptr;
+  const int test_width = native_alioth ? 1080 : 1440;
+  const int test_height = native_alioth ? 2400 : 3168;
+  // Some test cases intentionally change viewport size; reserve the largest canvas.
   std::vector<uint8_t> frame(1440*3168*4);
-  auto *display=lv_display_create(1440,3168);
+  auto *display=lv_display_create(test_width,test_height);
   lv_display_set_buffers(display,frame.data(),nullptr,frame.size(),LV_DISPLAY_RENDER_MODE_DIRECT);
   lv_display_set_flush_cb(display,[](lv_display_t *d,const lv_area_t *,uint8_t *){lv_display_flush_ready(d);});
   auto save=[&](const char *path) {
@@ -527,6 +534,13 @@ int main(int argc,char **argv) {
     image.format=PNG_FORMAT_BGRA;
     assert(png_image_write_to_file(&image,path,0,frame.data(),0,nullptr));
   };
+  const char* font_scale = std::getenv("AERA_TEST_FONT_SCALE");
+  design::kDeviceFontScale = font_scale ? std::atoi(font_scale) : (native_alioth ? 100 : 150);
+  assert(design::kDeviceFontScale >= 100 && design::kDeviceFontScale <= 200);
+  const char* control_scale = std::getenv("AERA_TEST_CONTROL_SCALE");
+  design::kDeviceControlScale = control_scale ? std::atoi(control_scale) : 100;
+  assert(design::kDeviceControlScale >= 100 && design::kDeviceControlScale <= 150);
+  design::ApplyInterfaceSize(static_cast<int>(interface_size));
   auto *screen=lv_screen_active();
   if (!strcmp(argv[1], "--status-bar-settings")) {
     for (const char *language : {"en", "de_DE"}) {
@@ -627,9 +641,305 @@ int main(int argc,char **argv) {
         lv_screen_load(screen); lv_obj_delete(page);
       }
     }
-    lv_deinit();
+    fonts::ShutdownFallbackFonts(); lv_deinit();
     std::filesystem::remove_all(backup_root);
     puts("Preferences status-bar page, battery previews, switches, positioning and save errors passed");
+    return 0;
+  }
+  if (control_scale) {
+    assert(design::IsPrivateUseIcon(LV_SYMBOL_WIFI));
+    assert(design::IsPrivateUseIcon(LV_SYMBOL_TRASH));
+    assert(design::IsPrivateUseIcon(LV_SYMBOL_BLUETOOTH));
+    assert(!design::IsPrivateUseIcon("Wi-Fi"));
+    assert(!design::IsPrivateUseIcon(LV_SYMBOL_WIFI " Wi-Fi"));
+    assert(!design::IsPrivateUseIcon("\xef\xbc\x81"));  // full-width punctuation
+    auto *icon = design::Label(screen, LV_SYMBOL_WIFI, &lv_font_montserrat_48, design::kText);
+    auto *copy = design::Label(screen, "Wi-Fi", &lv_font_montserrat_48, design::kText);
+    assert(lv_obj_get_style_transform_scale_x(icon, LV_PART_MAIN) == design::ControlSize(256));
+    assert(lv_obj_get_style_transform_scale_x(copy, LV_PART_MAIN) == 256);
+    assert(lv_obj_get_style_text_font(icon, LV_PART_MAIN) == lv_obj_get_style_text_font(copy, LV_PART_MAIN));
+    auto *toggle = lv_switch_create(screen);
+    widgets::StyleSwitch(toggle, false);
+    lv_obj_update_layout(screen);
+    assert(lv_obj_get_width(toggle) == design::ControlSize(108));
+    assert(lv_obj_get_height(toggle) == design::ControlSize(60));
+    lv_obj_delete(icon); lv_obj_delete(copy); lv_obj_delete(toggle);
+  }
+  if (!strcmp(argv[1], "--appvault-layout")) {
+    auto AssertBelow = [](lv_obj_t *below, lv_obj_t *above) {
+      lv_area_t lower{}, upper{};
+      lv_obj_get_coords(below, &lower); lv_obj_get_coords(above, &upper);
+      assert(lower.y1 > upper.y2);
+    };
+    design::ApplyInterfaceSize(3);
+    for (const char *language : {"en", "de_DE"})
+    for (bool landscape : {false, true}) {
+      assert(i18n::SetLanguage(language));
+      lv_display_set_resolution(display, landscape ? test_height : test_width,
+                                landscape ? test_width : test_height);
+      auto *page = lv_obj_create(nullptr);
+      design::Clear(page);
+      const int width = landscape ? 2920 : 1312;
+      const int height = landscape ? 1280 : 2520;
+      auto *sheet = lv_obj_create(page);
+      design::Panel(sheet, 48, design::kMainSheet);
+      lv_obj_set_size(sheet, width, height);
+      lv_obj_center(sheet);
+      auto *title = design::Label(sheet, "Restore apps", &lv_font_montserrat_48, design::kText);
+      lv_obj_set_pos(title, 176, 30);
+      auto *subtitle = design::Label(sheet, "2026-10-11 19:42", &lv_font_montserrat_24, design::kMuted);
+      lv_obj_set_pos(subtitle, 178, 88);
+      auto *selected = design::Label(sheet, "2 of 2 apps selected", &lv_font_montserrat_24, design::kMuted);
+      lv_obj_set_pos(selected, 38, 150);
+      const int top = appvault::layout::RestoreHeader(title, subtitle, selected);
+      auto *list = lv_obj_create(sheet);
+      design::Clear(list);
+      lv_obj_set_pos(list, 28, top);
+      lv_obj_set_size(list, width - 56, height - top - 185);
+      int y = 0;
+      lv_obj_t *previous = nullptr;
+      for (const char *name : {"Calendar", "An application with a much longer display name"}) {
+        auto *row = lv_obj_create(list);
+        design::Clear(row);
+        lv_obj_set_pos(row, 0, y);
+        lv_obj_set_size(row, width - 80, 128);
+        auto *label = design::Label(row, name, &lv_font_montserrat_32, design::kText);
+        lv_obj_set_pos(label, 118, 18);
+        lv_obj_set_width(label, width - 350);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+        auto *package = design::Label(row, "org.example.application", &lv_font_montserrat_20, design::kMuted);
+        lv_obj_set_pos(package, 118, 68);
+        lv_obj_set_width(package, width - 410);
+        lv_label_set_long_mode(package, LV_LABEL_LONG_DOT);
+        y += appvault::layout::Row(row, label, package, 68, 128) + 8;
+        lv_screen_load(page); Tick();
+        AssertBelow(package, label);
+        AssertContained(label, row); AssertContained(package, row);
+        if (previous) AssertBelow(row, previous);
+        previous = row;
+      }
+      AssertBelow(subtitle, title); AssertBelow(selected, subtitle); AssertBelow(list, selected);
+      AssertContained(list, sheet);
+      if (!strcmp(language, "en")) save(landscape ? "/tmp/aera-appvault-layout-landscape.png" : "/tmp/aera-appvault-layout-portrait.png");
+      lv_screen_load(screen); lv_obj_delete(page);
+      page = lv_obj_create(nullptr);
+      design::Clear(page);
+      auto *hero = lv_obj_create(page);
+      design::Clear(hero);
+      lv_obj_set_pos(hero, 64, 320);
+      lv_obj_set_width(hero, landscape ? 900 : 1312);
+      auto make = [&](const char *text, const lv_font_t *font, int x, int y, int w) {
+        auto *label = design::Label(hero, text, font, design::kText);
+        lv_obj_set_pos(label, x, y); lv_obj_set_width(label, w);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+        return label;
+      };
+      auto *status = make("Preparing app backup", &lv_font_montserrat_48, 184, 44, landscape ? 650 : 1040);
+      auto *detail = make("Your selected applications will be backed up securely.", &lv_font_montserrat_24, 184, 104, landscape ? 650 : 1040);
+      auto *location_title = make("Backup folder", &lv_font_montserrat_24, 40, 218, landscape ? 820 : 1210);
+      auto *location = make("/data/media/0/AERA/AppVault", &lv_font_montserrat_32, 40, 266, landscape ? 820 : 1210);
+      auto *protection = make("App data is protected with your backup password.", &lv_font_montserrat_24, 40, 334, landscape ? 820 : 1210);
+      auto *progress = lv_bar_create(hero);
+      lv_obj_set_size(progress, landscape ? 824 : 1236, 12);
+      const int hero_height = appvault::layout::Hero(status, detail, location_title, location, protection, progress);
+      lv_obj_set_height(hero, hero_height);
+      lv_screen_load(page); Tick();
+      AssertBelow(detail, status); AssertBelow(location_title, detail);
+      AssertBelow(location, location_title); AssertBelow(protection, location);
+      AssertBelow(progress, protection);
+      for (auto *label : {status, detail, location_title, location, protection}) AssertContained(label, hero);
+      auto *apps = lv_obj_create(page); design::Clear(apps);
+      lv_obj_set_pos(apps, landscape ? 994 : 64, landscape ? 320 : 320 + hero_height + 30);
+      lv_obj_set_size(apps, landscape ? 2110 : 1312, 800);
+      auto *apps_title = design::Label(apps, "Apps", &lv_font_montserrat_48, design::kText);
+      lv_obj_set_pos(apps_title, 34, 24);
+      lv_obj_set_width(apps_title, (landscape ? 2110 : 1312) - 2 * (landscape ? 410 : 330) - 104);
+      lv_label_set_long_mode(apps_title, LV_LABEL_LONG_WRAP);
+      auto *selection = design::Label(apps, "24 applications selected for backup", &lv_font_montserrat_24, design::kMuted);
+      lv_obj_set_pos(selection, 36, 82);
+      lv_obj_set_width(selection, (landscape ? 2110 : 1312) - 2 * (landscape ? 410 : 330) - 104);
+      lv_label_set_long_mode(selection, LV_LABEL_LONG_WRAP);
+      auto *user = lv_button_create(apps);
+      lv_obj_set_size(user, landscape ? 680 : 600, 82);
+      lv_obj_set_pos(user, 24, 130);
+      const int list_top = appvault::layout::AppsHeader(apps_title, selection, user);
+      auto *apps_list = lv_obj_create(apps); design::Clear(apps_list);
+      lv_obj_set_pos(apps_list, 24, list_top); lv_obj_set_size(apps_list, landscape ? 2062 : 1264, 800 - list_top - 40);
+      Tick();
+      AssertBelow(selection, apps_title); AssertBelow(user, selection); AssertBelow(apps_list, user);
+      AssertContained(apps_list, apps);
+      lv_screen_load(screen); lv_obj_delete(page);
+    }
+    return 0;
+  }
+
+  if (!strcmp(argv[1], "--file-action-layout")) {
+    for (const auto &language : i18n::AvailableLanguages()) {
+      if (language.rtl) continue;
+      assert(i18n::SetLanguage(language.code));
+      for (bool landscape : {false, true}) {
+        lv_display_set_resolution(display, landscape ? test_height : test_width,
+                                  landscape ? test_width : test_height);
+        auto *files = lv_obj_create(nullptr);
+        BuildFilesScene(files, RecordAction, nullptr);
+        lv_screen_load(files); Tick();
+        auto *create = Find(files, LV_SYMBOL_PLUS); assert(create);
+        lv_obj_send_event(create, LV_EVENT_CLICKED, nullptr); Tick();
+        for (const char *action : {"New folder", "New text file"}) {
+          auto *label = FindLabel(files, i18n::Translate(action));
+          if (!label) { fprintf(stderr, "missing action %s language %s landscape %d\n", action, language.code, landscape); save("/tmp/aera-file-actions-failure.png"); }
+          assert(label);
+          AssertContained(label, lv_obj_get_parent(label));
+          AssertInside(lv_obj_get_parent(label),
+              lv_display_get_horizontal_resolution(display),
+              lv_display_get_vertical_resolution(display));
+        }
+        assert(widgets::DismissModal(files)); Tick();
+        lv_screen_load(screen); lv_obj_delete(files);
+      }
+    }
+    std::filesystem::remove_all(backup_root);
+    return 0;
+  }
+  if (!strcmp(argv[1], "--alioth-menu-layout")) {
+    for (const char *language : {"en", "de_DE", "zh_CN"}) {
+      assert(i18n::SetLanguage(language));
+      for (bool landscape : {false, true}) {
+        lv_display_set_resolution(display, landscape ? test_height : test_width,
+                                  landscape ? test_width : test_height);
+        auto *menu = lv_obj_create(nullptr);
+        BuildToolScene(menu, Action::kSettings, RecordAction, nullptr);
+        lv_screen_load(menu); Tick();
+        auto *heading = FindLabel(menu, i18n::Translate("Menu"));
+        auto *subtitle = FindLabel(menu, i18n::Translate("Tools for your recovery session."));
+        assert(heading && subtitle && !Overlaps(heading, subtitle));
+        for (const char *title : {"Mounts", "ADB Sideload", "Recovery log", "Wi-Fi",
+             "Network Storage", "Android Users", "Theme Engine", "Preferences",
+             "PC connection", "About AERA", "Reboot"}) {
+          auto *card = Find(menu, i18n::Translate(title)); assert(card);
+          for (uint32_t i = 0; i < lv_obj_get_child_count(card); ++i) {
+            auto *child = lv_obj_get_child(card, i);
+            if (lv_obj_check_type(child, &lv_label_class)) AssertContained(child, card);
+          }
+        }
+        auto *about = Find(menu, i18n::Translate("About AERA"));
+        auto *reboot = Find(menu, i18n::Translate("Reboot"));
+        assert(!Overlaps(about, reboot));
+        AssertContained(about, menu); AssertContained(reboot, menu);
+        if (!strcmp(language, "en"))
+          save(landscape ? "/tmp/aera-menu-landscape.png" : "/tmp/aera-menu-portrait.png");
+        lv_screen_load(screen); lv_obj_delete(menu);
+      }
+    }
+    std::filesystem::remove_all(backup_root);
+    return 0;
+  }
+  if (!strcmp(argv[1], "--terminal-navigation")) {
+    design::ApplyInterfaceSize(3);
+    for (bool landscape : {false, true}) {
+      lv_display_set_resolution(display, landscape ? test_height : test_width,
+                                landscape ? test_width : test_height);
+      auto *terminal = lv_obj_create(nullptr);
+      BuildTerminalScene(terminal, RecordAction, nullptr);
+      auto *close = Find(terminal, LV_SYMBOL_LEFT " Close terminal");
+      auto *input = FindType(terminal, &lv_textarea_class);
+      auto *keyboard = FindType(terminal, &lv_keyboard_class);
+      assert(close && input && keyboard);
+      lv_screen_load(terminal);
+      lv_obj_send_event(input, LV_EVENT_CLICKED, nullptr);
+      lv_obj_update_layout(terminal);
+      save(landscape ? "/tmp/aera-terminal-landscape.png" : "/tmp/aera-terminal-portrait.png");
+      assert(!lv_obj_has_flag(keyboard, LV_OBJ_FLAG_HIDDEN));
+      lv_area_t close_area{}, keyboard_area{};
+      lv_obj_get_coords(close, &close_area);
+      lv_obj_get_coords(keyboard, &keyboard_area);
+      assert(close_area.y1 >= 0 && close_area.y2 < keyboard_area.y1);
+      const int before = callback_count;
+      lv_obj_send_event(close, LV_EVENT_CLICKED, nullptr);
+      assert(callback_count == before + 1 && last_action == Action::kSettings);
+      lv_screen_load(screen);
+      lv_obj_delete(terminal);
+    }
+    return 0;
+  }
+  if (!strcmp(argv[1], "--mounts-layout")) {
+    design::ApplyInterfaceSize(3);
+    for (bool landscape : {false, true}) {
+      lv_display_set_resolution(display, landscape ? test_height : test_width,
+                                landscape ? test_width : test_height);
+      auto *mounts = lv_obj_create(nullptr);
+      BuildToolScene(mounts, Action::kMounts, RecordAction, nullptr);
+      lv_screen_load(mounts); Tick();
+      for (const char *name : {"Metadata", "Data"}) {
+        auto *title = FindLabel(mounts, name); assert(title);
+        auto *row = lv_obj_get_parent(title);
+        auto *status = lv_obj_get_child(row, 4);
+        auto *toggle = FindType(row, &lv_switch_class);
+        assert(lv_obj_check_type(status, &lv_label_class));
+        assert(toggle && !Overlaps(status, toggle));
+        assert(!Overlaps(title, status));
+        assert(!Overlaps(lv_obj_get_child(row, 3), status));
+        AssertContained(status, row); AssertContained(toggle, row);
+      }
+      save(landscape ? "/tmp/aera-mounts-landscape.png" : "/tmp/aera-mounts-portrait.png");
+      lv_screen_load(screen); lv_obj_delete(mounts);
+    }
+    std::filesystem::remove_all(backup_root);
+    return 0;
+  }
+  if (!strcmp(argv[1], "--wifi-layout")) {
+    design::ApplyInterfaceSize(3);
+    for (bool landscape : {false, true}) {
+      lv_display_set_resolution(display, landscape ? test_height : test_width,
+                                landscape ? test_width : test_height);
+      auto *wifi = lv_obj_create(nullptr);
+      BuildWifiScene(wifi, RecordAction, nullptr);
+      lv_screen_load(wifi); Tick();
+      auto *network = Find(wifi, "AERA Lab"); assert(network);
+      lv_obj_send_event(network, LV_EVENT_CLICKED, nullptr); Tick();
+      auto *password = FindType(wifi, &lv_textarea_class);
+      auto *keyboard = FindType(wifi, &lv_keyboard_class);
+      auto *connect = Find(wifi, "Connect");
+      assert(password && keyboard && connect);
+      AssertVisibleCaret(password);
+      lv_area_t input_area{}, connect_area{}, keyboard_area{};
+      lv_obj_get_coords(password, &input_area);
+      lv_obj_get_coords(connect, &connect_area);
+      lv_obj_get_coords(keyboard, &keyboard_area);
+      assert(input_area.y1 >= 0 && input_area.y2 < keyboard_area.y1);
+      assert(connect_area.y1 > keyboard_area.y2);
+      assert(connect_area.y2 < lv_display_get_vertical_resolution(display));
+      save(landscape ? "/tmp/aera-wifi-landscape.png" : "/tmp/aera-wifi-portrait.png");
+      lv_textarea_set_text(password, "fixture password");
+      lv_obj_send_event(connect, LV_EVENT_CLICKED, nullptr);
+      assert(last_action == Action::kRunWifiOperation);
+      Tick();
+      auto *settings_label = FindLabelContaining(wifi, "Wi-Fi settings");
+      assert(settings_label);
+      lv_obj_send_event(lv_obj_get_parent(settings_label), LV_EVENT_CLICKED, nullptr);
+      Tick();
+      for (const char *tag : {"Auto-enable", "Auto-connect"}) {
+        auto *title = FindLabel(wifi, tag); assert(title);
+        auto *row = lv_obj_get_parent(title);
+        auto *detail = lv_obj_get_child(row, 1);
+        AssertContained(title, row); AssertContained(detail, row);
+        assert(!Overlaps(title, detail));
+      }
+      auto *enable_row = lv_obj_get_parent(FindLabel(wifi, "Auto-enable"));
+      auto *connect_row = lv_obj_get_parent(FindLabel(wifi, "Auto-connect"));
+      auto *feedback = FindLabel(wifi, "Changes apply immediately");
+      assert(feedback && !Overlaps(enable_row, connect_row));
+      assert(!Overlaps(connect_row, feedback));
+      auto *command = FindLabel(wifi, "Enable ADB over Wi-Fi to reveal the PC command.");
+      assert(command); AssertContained(command, lv_obj_get_parent(command));
+      auto *adb_title = FindLabel(wifi, "Wireless ADB is off");
+      auto *adb_detail = FindLabel(wifi,
+          "Disabled by default for security. Enable it only when needed.");
+      assert(adb_title && adb_detail && !Overlaps(adb_title, adb_detail));
+      save(landscape ? "/tmp/aera-wifi-settings-landscape.png" : "/tmp/aera-wifi-settings-portrait.png");
+      lv_screen_load(screen); lv_obj_delete(wifi);
+    }
+    std::filesystem::remove_all(backup_root);
     return 0;
   }
   if (!strcmp(argv[1], "--pc-upload-progress")) {
@@ -714,7 +1024,7 @@ int main(int argc,char **argv) {
     key(KEY_TAB);assert(hardware_keyboard::focus==inside);
     lv_obj_delete(modal);assert(!hardware_keyboard::focus);
     assert(!key(KEY_ESC));
-    lv_deinit();std::filesystem::remove_all(backup_root);
+    fonts::ShutdownFallbackFonts(); lv_deinit();std::filesystem::remove_all(backup_root);
     puts("Physical keyboard UI: typing, modifiers, repeat, editing, submit, focus, deletion and modal isolation passed.");
     return 0;
   }
@@ -774,14 +1084,14 @@ int main(int argc,char **argv) {
       for (auto size : {InterfaceSize::kSmall, InterfaceSize::kNormal, InterfaceSize::kLarge, InterfaceSize::kSpacious}) {
         interface_size=size;design::ApplyInterfaceSize(static_cast<int>(size));
         for (bool landscape : {false,true}) {
-          lv_display_set_resolution(display, landscape?3168:1440, landscape?1440:3168);
+          lv_display_set_resolution(display, landscape?test_height:test_width, landscape?test_width:test_height);
           for (bool restore : {false,true}) {
             lv_obj_clean(screen);
             JobRequest request;request.job=Job::kPcBackupOperation;request.title="Recovery backup";
             request.backup_kind="recovery";request.backup_source="computer";request.backup_action=restore?"restore":"backup";
             auto operation=BuildJobScene(screen,request,RecordAction,nullptr);
             const char *partition="Super (system system_ext product vendor)";
-            operation_detail=std::string("backing / ")+partition+"\n4584MB of 18032MB (25%)";
+            operation_detail=std::string(restore ? "restoring / " : "backing / ")+partition+"\n4584MB of 18032MB (25%)";
             RefreshOperationScene(operation);Tick(2);
             assert(std::string(lv_label_get_text(operation.status))==i18n::Format(restore?"Restoring %s":"Backing up %s",partition));
             lv_area_t title,detail,percent;
@@ -789,8 +1099,18 @@ int main(int argc,char **argv) {
             assert(title.y2<detail.y1 && detail.y2<percent.y1);
             AssertContained(operation.status,lv_obj_get_parent(operation.status));
             AssertContained(operation.detail,lv_obj_get_parent(operation.detail));
-            AssertContained(operation.destination,lv_obj_get_parent(operation.destination));
-            if(!landscape&&restore&&size==InterfaceSize::kSpacious&&!strcmp(language,"en"))save("/tmp/aera-pc-long-restore.png");
+            if (landscape) {
+              auto *card = lv_obj_get_parent(operation.destination);
+              lv_area_t card_area{}, cancel_area{};
+              lv_obj_get_coords(card, &card_area);
+              lv_obj_get_coords(operation.cancel, &cancel_area);
+              assert(card_area.y2 < cancel_area.y1);
+              lv_obj_scroll_to_view(operation.destination, LV_ANIM_OFF);
+              lv_obj_update_layout(card);
+              AssertContained(operation.destination, card);
+              lv_obj_scroll_to_y(card, 0, LV_ANIM_OFF);
+            } else AssertContained(operation.destination,lv_obj_get_parent(operation.destination));
+            if(restore&&size==InterfaceSize::kSpacious&&!strcmp(language,"de_DE"))save(landscape ? "/tmp/aera-pc-long-restore-landscape.png" : "/tmp/aera-pc-long-restore.png");
             CompleteOperationScene(operation,true,"Everything finished successfully.");
           }
         }
@@ -800,7 +1120,7 @@ int main(int argc,char **argv) {
   }
   if (!strcmp(argv[1], "--payload-parallel") || !strcmp(argv[1], "--payload-parallel-landscape")) {
     const bool landscape = !strcmp(argv[1], "--payload-parallel-landscape");
-    if (landscape) lv_display_set_resolution(display, 3168, 1440);
+    if (landscape) lv_display_set_resolution(display, test_height, test_width);
     JobRequest request;
     request.job = Job::kFlashPayload;
     request.payload_direct = true;
@@ -864,6 +1184,9 @@ int main(int argc,char **argv) {
     assert(lv_obj_get_height(operation.activity_panel) < running_height);
     assert(panel.y2 < done.y1 && row.y2 < details.y1);
     assert(details.y2 <= panel.y2);
+    lv_display_delete(display);
+    fonts::ShutdownFallbackFonts();
+    lv_deinit();
     std::filesystem::remove_all(backup_root);
     return 0;
   }
@@ -901,7 +1224,7 @@ int main(int argc,char **argv) {
       assert(bool(Find(screen, "Fast flash (experimental)")) == !incremental);
       lv_obj_send_event(advanced, LV_EVENT_CLICKED, nullptr); Tick();
       assert(Find(screen, "Advanced ZIP options"));
-      AssertInside(Find(screen, "Advanced ZIP options"), 1440, 3168);
+      AssertInside(Find(screen, "Advanced ZIP options"), test_width, test_height);
       if (incremental) {
         assert(!Find(screen, "Extract selected images"));
       } else {
@@ -934,16 +1257,16 @@ int main(int argc,char **argv) {
         assert(callback_count == 0);
         lv_obj_send_event(flash_review, LV_EVENT_CLICKED, nullptr); Tick();
         auto *flash_slider = Find(screen, "Swipe to flash selected"); assert(flash_slider);
-        AssertInside(flash_slider, 1440, 3168);
+        AssertInside(flash_slider, test_width, test_height);
         auto *flash_cancel = Find(lv_obj_get_parent(flash_slider), "Cancel"); assert(flash_cancel);
-        AssertInside(flash_cancel, 1440, 3168);
+        AssertInside(flash_cancel, test_width, test_height);
         lv_obj_send_event(flash_cancel, LV_EVENT_CLICKED, nullptr); Tick();
         assert(callback_count == 0);
         auto *back = Find(lv_obj_get_parent(flash_review), LV_SYMBOL_LEFT "  Back"); assert(back);
         lv_obj_send_event(back, LV_EVENT_CLICKED, nullptr); Tick();
         auto *extract = Find(screen, "Extract selected images"); assert(extract);
         auto *direct = Find(screen, "Direct flash selected partitions"); assert(direct);
-        AssertInside(direct, 1440, 3168);
+        AssertInside(direct, test_width, test_height);
         lv_obj_send_event(direct, LV_EVENT_CLICKED, nullptr); Tick();
         auto *direct_all = Find(screen, "Select all"); assert(direct_all);
         lv_obj_send_event(direct_all, LV_EVENT_CLICKED, nullptr); Tick();
@@ -951,20 +1274,20 @@ int main(int argc,char **argv) {
         lv_obj_send_event(direct_review, LV_EVENT_CLICKED, nullptr); Tick();
         assert(FindLabelContaining(screen, "No temporary images are saved"));
         auto *direct_slider = Find(screen, "Swipe to flash selected"); assert(direct_slider);
-        AssertInside(direct_slider, 1440, 3168);
+        AssertInside(direct_slider, test_width, test_height);
         save("/tmp/aera-direct-flash-confirmation.png");
         auto *direct_cancel = Find(lv_obj_get_parent(direct_slider), "Cancel"); assert(direct_cancel);
         lv_obj_send_event(direct_cancel, LV_EVENT_CLICKED, nullptr); Tick();
         auto *direct_back = Find(lv_obj_get_parent(direct_review), LV_SYMBOL_LEFT "  Back"); assert(direct_back);
         lv_obj_send_event(direct_back, LV_EVENT_CLICKED, nullptr); Tick();
         assert(callback_count == 0);
-        AssertInside(extract, 1440, 3168);
+        AssertInside(extract, test_width, test_height);
         lv_obj_send_event(extract, LV_EVENT_CLICKED, nullptr); Tick();
         auto *review = Find(screen, "Review extraction"); assert(review);
         assert(lv_obj_has_state(review, LV_STATE_DISABLED));
         auto *boot = Find(screen, "boot"); assert(boot);
         auto *extract_all = Find(screen, "Select all"); assert(extract_all);
-        AssertInside(extract_all, 1440, 3168);
+        AssertInside(extract_all, test_width, test_height);
         lv_obj_send_event(extract_all, LV_EVENT_CLICKED, nullptr); Tick();
         assert(Find(screen, "Deselect all"));
         assert(FindLabelContaining(screen, "5 selected /"));
@@ -978,7 +1301,7 @@ int main(int argc,char **argv) {
         assert(lv_obj_has_state(review, LV_STATE_DISABLED));
         lv_obj_send_event(boot, LV_EVENT_CLICKED, nullptr); Tick();
         assert(!lv_obj_has_state(review, LV_STATE_DISABLED));
-        AssertInside(review, 1440, 3168);
+        AssertInside(review, test_width, test_height);
         assert(Find(screen, "Requires source image"));
         auto *unavailable = Find(screen, "Unavailable images (1)  " LV_SYMBOL_DOWN);
         assert(unavailable);
@@ -987,10 +1310,10 @@ int main(int argc,char **argv) {
         const auto review_bounds = Bounds(review);
         lv_obj_send_event(review, LV_EVENT_CLICKED, nullptr); Tick();
         auto *extract_slider = Find(screen, "Swipe to extract"); assert(extract_slider);
-        AssertInside(extract_slider, 1440, 3168);
+        AssertInside(extract_slider, test_width, test_height);
         auto *extract_sheet = lv_obj_get_parent(extract_slider);
         auto *cancel = Find(extract_sheet, "Cancel"); assert(cancel);
-        AssertInside(cancel, 1440, 3168);
+        AssertInside(cancel, test_width, test_height);
         const auto after_review_bounds = Bounds(review);
         assert(review_bounds.y1 == after_review_bounds.y1);
         assert(review_bounds.y2 == after_review_bounds.y2);
@@ -1009,7 +1332,7 @@ int main(int argc,char **argv) {
     assert(Find(screen, "Install this package?"));
     assert(Find(screen, "Advanced  " LV_SYMBOL_RIGHT));
     lv_obj_clean(screen); Tick();
-    lv_deinit(); std::filesystem::remove_all(backup_root);
+    fonts::ShutdownFallbackFonts(); lv_deinit(); std::filesystem::remove_all(backup_root);
     puts("Advanced payload review: selection, incremental blocking, normal ZIP fallback and no implicit flash passed.");
     return 0;
   }
@@ -1035,7 +1358,7 @@ int main(int argc,char **argv) {
       save(themed ? "/tmp/aera-home-themed.png" : "/tmp/aera-home-classic.png");
       lv_screen_load(screen); lv_obj_delete(home);
     }
-    lv_deinit();
+    fonts::ShutdownFallbackFonts(); lv_deinit();
     std::filesystem::remove_all(backup_root);
     puts("Home themed/classic layouts and Terminal icon hiding passed.");
     return 0;
@@ -1083,7 +1406,7 @@ int main(int argc,char **argv) {
       save(path.c_str());
       lv_obj_clean(screen);
     }
-    lv_deinit();
+    fonts::ShutdownFallbackFonts(); lv_deinit();
     std::filesystem::remove_all(backup_root);
     puts("Themed artwork: every design rendered in three appearances; fallback and input transparency passed.");
     return 0;
@@ -1189,7 +1512,7 @@ int main(int argc,char **argv) {
     assert(!RecoveryThemedHomeIcons());
     assert(last_action == Action::kTheme);
     lv_screen_load(screen); lv_obj_delete(theme);
-    lv_display_delete(display); lv_deinit();
+    lv_display_delete(display); fonts::ShutdownFallbackFonts(); lv_deinit();
     std::filesystem::remove_all(backup_root);
     puts("Settings autosave, deferred sliders, per-haptic resets, reset confirmation and save failures passed");
     return 0;
@@ -1206,8 +1529,8 @@ int main(int argc,char **argv) {
           assert(i18n::SetLanguage(language));
           interface_size = size;
           design::ApplyInterfaceSize(static_cast<int>(size));
-          lv_display_set_resolution(display, landscape ? 3168 : 1440,
-                                    landscape ? 1440 : 3168);
+          lv_display_set_resolution(display, landscape ? test_height : test_width,
+                                    landscape ? test_width : test_height);
           auto *wifi = lv_obj_create(nullptr);
           BuildToolScene(wifi, Action::kPcConnection, RecordAction, nullptr);
           lv_screen_load(wifi); Tick(2);
@@ -1240,7 +1563,7 @@ int main(int argc,char **argv) {
             save("/tmp/aera-pc-settings-host.png");
           lv_screen_load(screen); lv_obj_delete(wifi); Tick(1);
         }
-    lv_display_delete(display); lv_deinit();
+    lv_display_delete(display); fonts::ShutdownFallbackFonts(); lv_deinit();
     std::filesystem::remove_all(backup_root);
     puts("Menu PC settings fit six languages, four sizes and both orientations");
     return 0;
@@ -1273,7 +1596,7 @@ int main(int argc,char **argv) {
     assert(!payload::PlanFullFlash(info, targets, names, error, {"abl", "recovery"}));
     preferences[static_cast<int>(Preference::kPreserveAbl)] = old_abl;
     preferences[static_cast<int>(Preference::kPreserveRecovery)] = old_recovery;
-    lv_display_delete(display); lv_deinit();
+    lv_display_delete(display); fonts::ShutdownFallbackFonts(); lv_deinit();
     std::filesystem::remove_all(backup_root);
     puts("ABL/recovery protection and full-payload planning passed; no partitions written");
     return 0;
@@ -1290,8 +1613,8 @@ int main(int argc,char **argv) {
             haptics_available = haptics;
             interface_size = size;
             design::ApplyInterfaceSize(static_cast<int>(size));
-            lv_display_set_resolution(display, landscape ? 3168 : 1440,
-                                      landscape ? 1440 : 3168);
+            lv_display_set_resolution(display, landscape ? test_height : test_width,
+                                      landscape ? test_width : test_height);
             auto *prefs = lv_obj_create(nullptr);
             BuildToolScene(prefs, Action::kPreferences, RecordAction, nullptr);
             lv_screen_load(prefs); Tick(1);
@@ -1349,7 +1672,7 @@ int main(int argc,char **argv) {
             }
             lv_screen_load(screen); lv_obj_delete(prefs);
           }
-    lv_display_delete(display); lv_deinit();
+    lv_display_delete(display); fonts::ShutdownFallbackFonts(); lv_deinit();
     std::filesystem::remove_all(backup_root);
     puts("Preferences layout: ordered rows, separate sliders and reachable bottom reset passed");
     return 0;
@@ -1392,8 +1715,8 @@ int main(int argc,char **argv) {
           dock_layout = static_cast<DockLayout>(layout);
           interface_size = size;
           design::ApplyInterfaceSize(static_cast<int>(size));
-          lv_display_set_resolution(display, landscape ? 3168 : 1440,
-                                    landscape ? 1440 : 3168);
+          lv_display_set_resolution(display, landscape ? test_height : test_width,
+                                    landscape ? test_width : test_height);
           auto *language = lv_obj_create(nullptr);
           BuildToolScene(language, Action::kLanguage, RecordAction, nullptr);
           lv_screen_load(language); Tick(1);
@@ -1411,7 +1734,7 @@ int main(int argc,char **argv) {
             save("/tmp/aera-language-landscape-host.png");
           lv_screen_load(screen); lv_obj_delete(language);
         }
-    lv_display_delete(display); lv_deinit();
+    lv_display_delete(display); fonts::ShutdownFallbackFonts(); lv_deinit();
     std::filesystem::remove_all(backup_root);
     puts("Settings destinations and language viewport match all five docks and four sizes");
     return 0;
@@ -1420,8 +1743,8 @@ int main(int argc,char **argv) {
     for (bool landscape : {false, true}) for (bool clock24 : {false, true})
       for (auto size : {InterfaceSize::kSmall, InterfaceSize::kNormal,
                         InterfaceSize::kLarge, InterfaceSize::kSpacious}) {
-        lv_display_set_resolution(display, landscape ? 3168 : 1440,
-                                  landscape ? 1440 : 3168);
+        lv_display_set_resolution(display, landscape ? test_height : test_width,
+                                  landscape ? test_width : test_height);
         interface_size = size;
         preferences[static_cast<int>(Preference::kClock24)] = clock24;
         auto *files = lv_obj_create(nullptr);
@@ -1445,7 +1768,7 @@ int main(int argc,char **argv) {
         }
         lv_screen_load(screen); lv_obj_delete(files); Tick(2);
       }
-    lv_display_delete(display); lv_deinit();
+    lv_display_delete(display); fonts::ShutdownFallbackFonts(); lv_deinit();
     std::filesystem::remove_all(backup_root);
     puts("File timestamps fit all four sizes, both clock formats and both orientations");
     return 0;
@@ -1458,7 +1781,7 @@ int main(int argc,char **argv) {
     assert(Find(about,"Daniel Springer · Daniel210191"));
     assert(Find(about,"R1.0"));
     save("/tmp/aera-about-host.png");
-    lv_deinit();
+    fonts::ShutdownFallbackFonts(); lv_deinit();
     std::filesystem::remove_all(backup_root);
     return 0;
   }
@@ -1568,12 +1891,12 @@ int main(int argc,char **argv) {
   lv_screen_load(wipe); Tick();
   assert(Find(wipe,"Format Data"));
   assert(Find(wipe,"Snapshot COW cleanup"));
-  auto *wipe_review=Find(wipe,"Review wipe"); assert(wipe_review && lv_obj_has_state(wipe_review,LV_STATE_DISABLED));
+  auto *wipe_review=Find(wipe,"Review wipe"); assert(wipe_review && lv_obj_has_flag(wipe_review,LV_OBJ_FLAG_HIDDEN));
   auto *wipe_data=Find(wipe,"Data"); assert(wipe_data); lv_obj_send_event(wipe_data,LV_EVENT_CLICKED,nullptr);
-  assert(!lv_obj_has_state(wipe_review,LV_STATE_DISABLED));
+  assert(!lv_obj_has_flag(wipe_review,LV_OBJ_FLAG_HIDDEN));
   lv_area_t bar_area{};
   lv_obj_get_coords(lv_obj_get_parent(Find(wipe,"Home")),&bar_area);
-  assert(bar_area.y2==3167);
+  assert(bar_area.y2==test_height-1);
   save("/tmp/aera-wipe-host.png");
   lv_obj_send_event(Find(wipe,"Format Data"),LV_EVENT_CLICKED,nullptr);
   assert(last_action==Action::kFormatData);
@@ -1655,10 +1978,10 @@ int main(int argc,char **argv) {
   save("/tmp/aera-matte-backup-host.png");
   auto *restore=lv_obj_create(nullptr); BuildToolScene(restore,Action::kRestore,[](Action,void*){},nullptr);
   lv_screen_load(restore); Tick();
-  auto *restore_review=Find(restore,"Review restore"); assert(restore_review && lv_obj_has_state(restore_review,LV_STATE_DISABLED));
+  auto *restore_review=Find(restore,"Review restore"); assert(restore_review && lv_obj_has_flag(restore_review,LV_OBJ_FLAG_HIDDEN));
   auto *folder=Find(restore,"AERA-test-backup"); assert(folder); lv_obj_send_event(folder,LV_EVENT_CLICKED,nullptr); Tick();
   auto *restore_boot=Find(restore,"Boot"); assert(restore_boot); lv_obj_send_event(restore_boot,LV_EVENT_CLICKED,nullptr);
-  assert(!lv_obj_has_state(restore_review,LV_STATE_DISABLED));
+  assert(!lv_obj_has_flag(restore_review,LV_OBJ_FLAG_HIDDEN));
   save("/tmp/aera-restore-host.png"); lv_screen_load(screen); lv_obj_delete(restore);
   auto *unlock=lv_obj_create(nullptr); BuildDecryptScene(unlock,3,true,0,3,[](Action,void*){},nullptr);
   lv_screen_load(unlock); save("/tmp/aera-matte-unlock-host.png"); lv_screen_load(screen); lv_obj_delete(unlock);
@@ -1732,8 +2055,8 @@ int main(int argc,char **argv) {
       {InterfaceSize::kSpacious, "spacious"},
   };
   for (bool landscape : {false, true}) {
-    lv_display_set_resolution(display, landscape ? 3168 : 1440,
-                              landscape ? 1440 : 3168);
+    lv_display_set_resolution(display, landscape ? test_height : test_width,
+                              landscape ? test_width : test_height);
     for (const auto& [size, size_name] : file_sizes) {
       interface_size = size;
       design::ApplyInterfaceSize(static_cast<int>(size));
@@ -1742,7 +2065,20 @@ int main(int argc,char **argv) {
       lv_screen_load(files);
       Tick();
       assert(Find(files, "alpha.txt"));
-      assert(Find(files, "long-file-name-for-layout-validation.txt"));
+      auto *long_name = FindLabelContaining(files, "long-file-name");
+      assert(long_name); AssertContained(long_name, lv_obj_get_parent(long_name));
+      auto *long_row = lv_obj_get_parent(long_name);
+      lv_obj_send_event(long_row, LV_EVENT_PRESSED, nullptr);
+      lv_obj_send_event(long_row, LV_EVENT_LONG_PRESSED, nullptr);
+      lv_obj_send_event(long_row, LV_EVENT_CLICKED, nullptr); Tick();
+      auto *rename = Find(files, "Rename"); assert(rename);
+      lv_obj_send_event(rename, LV_EVENT_CLICKED, nullptr); Tick();
+      auto *name_overlay = lv_obj_get_child(files,
+          static_cast<int32_t>(lv_obj_get_child_count(files)) - 1);
+      auto *long_name_input = FindType(name_overlay, &lv_textarea_class); assert(long_name_input);
+      assert(!strcmp(lv_textarea_get_text(long_name_input),
+                     "long-file-name-for-layout-validation.txt"));
+      assert(widgets::DismissModal(files)); Tick();
       auto* alpha_row = Find(files, "alpha.txt");
       assert(lv_obj_get_height(alpha_row) ==
              (size == InterfaceSize::kSmall ? 150
@@ -1876,10 +2212,10 @@ int main(int argc,char **argv) {
       assert(name_input && name_keyboard && name_cancel && name_create);
       AssertVisibleCaret(name_input);
       save("/tmp/aera-file-name-debug.png");
-      AssertInside(name_input, landscape ? 3168 : 1440, landscape ? 1440 : 3168);
-      AssertInside(name_keyboard, landscape ? 3168 : 1440, landscape ? 1440 : 3168);
-      AssertInside(name_cancel, landscape ? 3168 : 1440, landscape ? 1440 : 3168);
-      AssertInside(name_create, landscape ? 3168 : 1440, landscape ? 1440 : 3168);
+      AssertInside(name_input, landscape ? test_height : test_width, landscape ? test_width : test_height);
+      AssertInside(name_keyboard, landscape ? test_height : test_width, landscape ? test_width : test_height);
+      AssertInside(name_cancel, landscape ? test_height : test_width, landscape ? test_width : test_height);
+      AssertInside(name_create, landscape ? test_height : test_width, landscape ? test_width : test_height);
       assert(!Overlaps(name_input, name_keyboard, 16));
       assert(!Overlaps(name_keyboard, name_cancel, 16));
       assert(!Overlaps(name_keyboard, name_create, 16));
@@ -1901,10 +2237,10 @@ int main(int argc,char **argv) {
       auto* editor_save = Find(files, "Save");
       assert(editor && editor_keyboard && editor_cancel && editor_save);
       AssertVisibleCaret(editor);
-      AssertInside(editor, landscape ? 3168 : 1440, landscape ? 1440 : 3168);
-      AssertInside(editor_keyboard, landscape ? 3168 : 1440, landscape ? 1440 : 3168);
-      AssertInside(editor_cancel, landscape ? 3168 : 1440, landscape ? 1440 : 3168);
-      AssertInside(editor_save, landscape ? 3168 : 1440, landscape ? 1440 : 3168);
+      AssertInside(editor, landscape ? test_height : test_width, landscape ? test_width : test_height);
+      AssertInside(editor_keyboard, landscape ? test_height : test_width, landscape ? test_width : test_height);
+      AssertInside(editor_cancel, landscape ? test_height : test_width, landscape ? test_width : test_height);
+      AssertInside(editor_save, landscape ? test_height : test_width, landscape ? test_width : test_height);
       assert(!Overlaps(editor, editor_keyboard, 16));
       assert(!Overlaps(editor_keyboard, editor_cancel, 16));
       assert(!Overlaps(editor_keyboard, editor_save, 16));
@@ -1927,7 +2263,7 @@ int main(int argc,char **argv) {
       Tick();
     }
   }
-  lv_display_set_resolution(display, 1440, 3168);
+  lv_display_set_resolution(display, test_width, test_height);
   interface_size = InterfaceSize::kLarge;
   for (const auto& language : i18n::AvailableLanguages()) {
     assert(i18n::SetLanguage(language.code));
@@ -1965,6 +2301,7 @@ int main(int argc,char **argv) {
     lv_obj_send_event(Find(files, LV_SYMBOL_PLUS), LV_EVENT_CLICKED, nullptr);
     Tick();
     auto* create_text = Find(files, i18n::Translate("New text file"));
+    if (!create_text) { fprintf(stderr, "missing create action language %s\n", language.code); save("/tmp/aera-create-action-failure.png"); }
     assert(create_text);
     lv_obj_send_event(create_text, LV_EVENT_CLICKED, nullptr);
     Tick();
@@ -1972,7 +2309,7 @@ int main(int argc,char **argv) {
     auto* cancel = Find(files, i18n::Translate("Cancel"));
     auto* create = Find(files, i18n::Translate("Create"));
     assert(keyboard && cancel && create);
-    AssertInside(keyboard, 1440, 3168);
+    AssertInside(keyboard, test_width, test_height);
     assert(!Overlaps(keyboard, cancel, 16));
     assert(!Overlaps(keyboard, create, 16));
     auto* cancel_label = FindLabel(cancel, i18n::Translate("Cancel"));
@@ -1999,7 +2336,7 @@ int main(int argc,char **argv) {
 
   if (!strcmp(argv[1], "--files")) {
     puts("Headless File Manager UI checks passed at all four density sizes.");
-    lv_deinit();
+    fonts::ShutdownFallbackFonts(); lv_deinit();
     std::filesystem::remove_all(backup_root);
     return 0;
   }
@@ -2013,6 +2350,6 @@ int main(int argc,char **argv) {
   save("/tmp/aera-about-host.png");
   lv_screen_load(screen); lv_obj_delete(about);
   puts("Headless UI checks passed: file-manager long press, creation, editor and keyboard geometry in six viewport/size combinations; wipe selection, format confirmation guard, keyboard no auto-submit, bottom navigation geometry, preference toggles, backup/restore, Android users, unlock, viewer, operation completion.");
-  lv_deinit();
+  fonts::ShutdownFallbackFonts(); lv_deinit();
   std::filesystem::remove_all(backup_root);
 }

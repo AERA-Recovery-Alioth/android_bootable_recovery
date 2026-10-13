@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <cassert>
 #include <sys/time.h>
+#include <fstream>
 #ifndef __unused
 #define __unused __attribute__((unused))
 #endif

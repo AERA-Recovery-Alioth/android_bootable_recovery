@@ -27,7 +27,7 @@ add_executable(ui_check ui_check.cpp
   ../localization/fonts/aera_fallback.cpp ../localization/i18n.cpp
   ../localization/catalog/catalog.cpp
   ../localization/catalog/catalog_generated.cpp
-  ../scenes/tool_scene.cpp ../scenes/sideload_scene.cpp
+  ../scenes/tool_scene.cpp ../scenes/terminal_scene.cpp ../scenes/sideload_scene.cpp
   ../scenes/wifi_scene.cpp ../components/picture_decode.cpp
   ../components/picture_viewer.cpp ../components/wallpaper.cpp
   ../scenes/operation_scene.cpp
@@ -286,6 +286,12 @@ target_link_libraries(status_gesture_test PRIVATE lvgl PNG::PNG Threads::Threads
 add_test(NAME status_gesture_cancellation COMMAND status_gesture_test)
 add_test(NAME status_bar_display_settings COMMAND ui_check --status-bar-settings)
 
+add_test(NAME terminal_exit_above_keyboard COMMAND ui_check --terminal-navigation)
+
+add_test(NAME wifi_password_keyboard_layout COMMAND ui_check --wifi-layout)
+
+add_test(NAME alioth_spacious_menu_layout COMMAND ui_check --alioth-menu-layout)
+add_test(NAME alioth_file_action_language_layout COMMAND ui_check --file-action-layout)
 find_program(AERA_NODE_EXECUTABLE node)
 if(AERA_NODE_EXECUTABLE)
   add_test(NAME pc_snapshot_label COMMAND "${AERA_NODE_EXECUTABLE}"
@@ -311,3 +317,60 @@ foreach(target frp_wipe_enabled_test frp_wipe_disabled_test)
   add_test(NAME ${target} COMMAND ${target})
 endforeach()
 target_compile_definitions(frp_wipe_enabled_test PRIVATE AERA_ENABLE_FRP_WIPE=1)
+add_executable(staging_file_test staging_file_test.cpp)
+target_compile_options(staging_file_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME app_registration_staging_retry COMMAND staging_file_test)
+
+add_test(NAME alioth_app_vault_layout COMMAND ui_check --appvault-layout)
+
+add_executable(registration_journal_test registration_journal_test.cpp
+  ../features/backup/registration_journal.cpp "${AERA_TINYXML2_DIR}/tinyxml2.cpp")
+target_include_directories(registration_journal_test PRIVATE "${AERA_TINYXML2_DIR}")
+target_compile_definitions(registration_journal_test PRIVATE AERA_JOURNAL_TESTING)
+target_compile_options(registration_journal_test PRIVATE -UNDEBUG -fno-exceptions -Wall -Wextra -Werror)
+target_link_libraries(registration_journal_test PRIVATE selinux OpenSSL::Crypto Threads::Threads)
+add_test(NAME app_registration_journal_recovery COMMAND registration_journal_test)
+
+add_executable(bootguard_test bootguard_test.cpp ../features/backup/bootguard.cpp)
+target_include_directories(bootguard_test PRIVATE ../../bootloader_message/include)
+target_compile_options(bootguard_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_link_libraries(bootguard_test PRIVATE Threads::Threads)
+add_test(NAME interrupted_restore_boot_guard COMMAND bootguard_test)
+
+# Alioth's native canvas must keep controls and text proportional.
+foreach(scene IN ITEMS alioth-menu-layout terminal-navigation wifi-layout)
+  add_test(NAME native_alioth_${scene} COMMAND ui_check --${scene})
+  set_tests_properties(native_alioth_${scene} PROPERTIES
+    ENVIRONMENT "AERA_TEST_NATIVE_ALIOTH=1" RUN_SERIAL TRUE)
+endforeach()
+
+add_test(NAME native_alioth_general_ui COMMAND ui_check
+  "${LVGL_DIR}/examples/libs/libpng/png_demo.png")
+set_tests_properties(native_alioth_general_ui PROPERTIES
+  ENVIRONMENT "AERA_TEST_NATIVE_ALIOTH=1" RUN_SERIAL TRUE)
+
+add_executable(wlan_mac_file_test wlan_mac_file_test.cpp)
+target_compile_options(wlan_mac_file_test PRIVATE -UNDEBUG)
+add_test(NAME wlan_factory_mac_and_symlink_safety COMMAND wlan_mac_file_test)
+
+add_test(NAME alioth_adaptive_profile125 COMMAND ui_check
+  "${LVGL_DIR}/examples/libs/libpng/png_demo.png")
+set_tests_properties(alioth_adaptive_profile125 PROPERTIES
+  ENVIRONMENT "AERA_TEST_FONT_SCALE=125" RUN_SERIAL TRUE)
+
+foreach(scene IN ITEMS alioth-menu-layout wifi-layout preferences-layout)
+  add_test(NAME alioth_controls150_${scene} COMMAND ui_check --${scene})
+  set_tests_properties(alioth_controls150_${scene} PROPERTIES
+    ENVIRONMENT "AERA_TEST_FONT_SCALE=125;AERA_TEST_CONTROL_SCALE=150" RUN_SERIAL TRUE)
+endforeach()
+add_test(NAME alioth_controls150_general_ui COMMAND ui_check
+  "${LVGL_DIR}/examples/libs/libpng/png_demo.png")
+set_tests_properties(alioth_controls150_general_ui PROPERTIES
+  ENVIRONMENT "AERA_TEST_FONT_SCALE=125;AERA_TEST_CONTROL_SCALE=150" RUN_SERIAL TRUE)
+
+add_test(NAME alioth_controls150_mounts_layout COMMAND ui_check --mounts-layout)
+set_tests_properties(alioth_controls150_mounts_layout PROPERTIES ENVIRONMENT "AERA_TEST_FONT_SCALE=125;AERA_TEST_CONTROL_SCALE=150" RUN_SERIAL TRUE)
+
+add_executable(performance_topology_test performance_topology_test.cpp)
+target_compile_options(performance_topology_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME recovery_cpu_policy_topology COMMAND performance_topology_test)

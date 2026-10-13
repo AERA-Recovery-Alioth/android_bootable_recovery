@@ -16,6 +16,8 @@ static NasStatus g_status;
 static std::atomic<bool> g_slow{false};
 static std::atomic<int> g_active{0};
 static std::atomic<int> g_cancelled{0};
+static std::atomic<int> g_started{0};
+static std::atomic<int> g_finished{0};
 static int g_actions = 0;
 
 namespace aeraui::wallpaper {
@@ -43,9 +45,12 @@ void RecoveryVibrate(Haptic) {}
 namespace aeraui::smb {
 Result List(const NasConfig &, const std::string &share, const std::string &path,
             const std::atomic<bool> &cancel) {
+  const bool slow = g_slow.load();
   ++g_active;
-  for (int i = 0; i < (g_slow ? 100 : 3); ++i) {
-    if (cancel.load()) { ++g_cancelled; --g_active; return {}; }
+  ++g_started;
+  for (int i = 0; slow || i < 3; ++i) {
+    assert(i < 3000); // A stalled cancellation must fail within 30 seconds.
+    if (cancel.load()) { ++g_cancelled; --g_active; ++g_finished; return {}; }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   Result result;
@@ -54,6 +59,7 @@ Result List(const NasConfig &, const std::string &share, const std::string &path
       "Android", "A very long folder name with spaces that must remain readable in the large interface size"};
   else if (share == "Public" && path == "Android") result.directories = {"AERA"};
   --g_active;
+  ++g_finished;
   return result;
 }
 }
@@ -180,13 +186,23 @@ int main(int argc, char **) {
         Click(screen, "Advanced");
         assert(Find(screen, i18n::Translate("Remote folder or path")));
         assert(Find(screen, i18n::Translate("Write cache")));
+        const int started = g_started.load();
         g_slow = true;
         Click(screen, "Browse folders");
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (g_started.load() == started) {
+          assert(std::chrono::steady_clock::now() < deadline);
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
         lv_screen_load(home);
         lv_obj_delete(screen);
         Tick();
         g_slow = false;
-        while (g_active.load()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        while (g_finished.load() != g_started.load()) {
+          assert(std::chrono::steady_clock::now() < deadline);
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        assert(g_active.load() == 0);
       }
     }
   }

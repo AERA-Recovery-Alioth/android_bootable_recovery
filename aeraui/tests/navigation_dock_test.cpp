@@ -23,6 +23,7 @@ void RecoveryVibrate(Haptic) {}
 }
 namespace aeraui::fonts {
 const lv_font_t *WithLanguageFallback(const lv_font_t *font) { return font; }
+const lv_font_t *ScaledUiFont(const lv_font_t *font, int) { return font; }
 }
 namespace aeraui::i18n {
 const char *Translate(const char *text) { return text; }
